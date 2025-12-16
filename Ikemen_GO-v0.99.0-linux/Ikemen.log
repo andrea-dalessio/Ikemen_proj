@@ -1,0 +1,11 @@
+Version: nightly
+Build Time: 2025.12.15
+
+Error log:
+external/script/main.lua:941: 
+Can't load lifebar : open data/gofx/gofx.def: no such file or directory
+
+stack traceback:
+	[G]: in function 'loadLifebar'
+	external/script/main.lua:941: in main chunk
+	[G]: ?

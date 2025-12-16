@@ -1,0 +1,655 @@
+package main
+
+import (
+	_ "embed" // Support for go:embed resources
+	"fmt"
+	"reflect"
+	"regexp"
+	"strings"
+	"unicode/utf8"
+
+	"gopkg.in/ini.v1"
+)
+
+//go:embed resources/defaultStoryboard.ini
+var defaultStoryboard []byte
+
+type LayerProperties struct {
+	Anim           int32      `ini:"anim" default:"-1"`
+	Spr            [2]int32   `ini:"spr" default:"-1,0"`
+	Offset         [2]float32 `ini:"offset"`
+	Facing         int32      `ini:"facing" default:"1"`
+	Scale          [2]float32 `ini:"scale" default:"1,1"`
+	Xshear         float32    `ini:"xshear"`
+	Angle          float32    `ini:"angle"`
+	Layerno        int16      `ini:"layerno" default:"2"`
+	Window         [4]int32   `ini:"window"`
+	Localcoord     [2]int32   `ini:"localcoord"`
+	Accel          [2]float32 `ini:"accel"`
+	Velocity       [2]float32 `ini:"velocity"`
+	Friction       [2]float32 `ini:"friction" default:"1,1"`
+	AnimData       *Anim
+	Font           [8]int32 `ini:"font" default:"-1,0,0,255,255,255,255,-1"`
+	Text           string   `ini:"text"`
+	TextSpriteData *TextSprite
+	PalFx          PalFxProperties `ini:"palfx"`
+	TextSpacing    float32         `ini:"textspacing"`
+	TextDelay      float32         `ini:"textdelay" default:"2"`
+	TextWindow     [4]int32        `ini:"textwindow"`
+	StartTime      int32           `ini:"starttime"`
+	EndTime        int32           `ini:"endtime"`
+	// runtime-only typing state (not loaded from INI)
+	typedLen          int
+	charDelayCounter  int32
+	lineFullyRendered bool
+}
+
+type SoundProperties struct {
+	Value         [2]int32 `ini:"value" default:"-1,0"`
+	StartTime     int32    `ini:"starttime"`
+	VolumeScale   int32    `ini:"volumescale" default:"100"`
+	Pan           float32  `ini:"pan"`
+	LoopStart     int      `ini:"loopstart"`
+	LoopEnd       int      `ini:"loopend"`
+	StartPosition int      `ini:"startposition"`
+}
+
+type SceneProperties struct {
+	End struct {
+		Time int32 `ini:"time"`
+	} `ini:"end"`
+	FadeIn       FadeProperties `ini:"fadein"`
+	FadeOut      FadeProperties `ini:"fadeout"`
+	ClearColor   [3]int32       `ini:"clearcolor" default:"-1,0,0"`
+	ClearAlpha   [2]int32       `ini:"clearalpha" default:"255,0"`
+	ClearLayerno int16          `ini:"clearlayerno" default:"0"`
+	RectData     *Rect
+	Layerall     struct {
+		Pos [2]float32 `ini:"pos"`
+	} `ini:"layerall"`
+	Layer map[string]*LayerProperties `ini:"map:^(?i)layer_?[0-9]+$" lua:"layer"`
+	Sound map[string]*SoundProperties `ini:"map:^(?i)sound_?[0-9]+$" lua:"sound"`
+	Bg    struct {
+		BGDef *BGDef
+		Name  string `ini:"name"`
+		//BgClearColor   [3]int32 `ini:"bgclearcolor" default:"0,0,0"`
+		//BgClearAlpha   [2]int32 `ini:"bgclearalpha" default:"255,0"`
+		//BgClearLayerno int16    `ini:"bgclearlayerno" default:"0"`
+		//RectData       *Rect
+	} `ini:"bg"`
+	Bgm   BgmProperties `ini:"bgm"`
+	Music Music
+}
+
+type Storyboard struct {
+	IniFile  *ini.File
+	At       AnimationTable
+	Sff      *Sff
+	Snd      *Snd
+	Fnt      map[int]*Fnt
+	Model    *Model
+	Def      string         `ini:"def"`
+	Info     InfoProperties `ini:"info"`
+	SceneDef struct {
+		Spr        string                     `ini:"spr" lookup:"def,,data/"`
+		Snd        string                     `ini:"snd" lookup:"def,,data/"`
+		Font       map[string]*FontProperties `ini:"map:^(?i)font[0-9]+$" lua:"font"`
+		Model      string                     `ini:"model" lookup:"def,,data/"`
+		StartScene int                        `ini:"startscene"`
+		Key        struct {
+			Skip   []string `ini:"skip"`
+			Cancel []string `ini:"cancel"`
+		} `ini:"key"`
+	} `ini:"scenedef"`
+	Scene         map[string]*SceneProperties `ini:"map:^(?i)scene_?[0-9]+$" lua:"scene"`
+	fntIndexByKey map[string]int
+	//enabled		   bool
+	active            bool
+	initialized       bool
+	counter           int32
+	endTimer          int32
+	sceneKeys         []string
+	currentSceneIndex int
+	cancel            bool
+	musicPlaying      bool
+	fadePolicy        FadeStartPolicy
+}
+
+// loadStoryboard loads and parses the INI file into a struct.
+func loadStoryboard(def string) (*Storyboard, error) {
+	// Define load options if needed
+	// https://github.com/go-ini/ini/blob/main/ini.go
+	options := ini.LoadOptions{
+		Insensitive:             false,
+		InsensitiveSections:     true,
+		InsensitiveKeys:         false,
+		IgnoreInlineComment:     false,
+		SkipUnrecognizableLines: true,
+		//AllowBooleanKeys: true,
+		AllowShadows: false,
+		//AllowNestedValues: true,
+		UnparseableSections:        []string{},
+		AllowPythonMultilineValues: false,
+		//KeyValueDelimiters: "=:",
+		//KeyValueDelimiterOnWrite: "=",
+		//ChildSectionDelimiter: ".",
+		//AllowNonUniqueSections: true,
+		//AllowDuplicateShadowValues: true,
+	}
+
+	// Load combined (for later font/music lookups), plus defaults-only and user-only
+	iniFile, err := ini.LoadSources(options, defaultStoryboard, def)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to load INI file: %w", err)
+	}
+	defaultOnlyIni, err := ini.LoadSources(options, defaultStoryboard)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to load defaults-only INI: %w", err)
+	}
+	userIniFile, err := ini.LoadSources(options, def)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to load user INI %s: %w", def, err)
+	}
+
+	var s Storyboard
+	s.Def = def
+	s.initStruct()
+
+	assignFrom := func(src *ini.File) error {
+		if src == nil {
+			return nil
+		}
+		// Group base vs. language-specific sections (preserving file order within each group).
+		type secPair struct {
+			sec  *ini.Section
+			name string // logical name without the "xx." prefix
+		}
+		var baseSecs, langSecs []secPair
+		curLang := SelectedLanguage()
+
+		// We only care about [Info], [SceneDef], and [Scene N] (case-insensitive, language prefix allowed).
+		interesting := func(logical string) bool {
+			l := strings.ToLower(logical)
+			return l == "info" || l == "scenedef" || strings.HasPrefix(l, "scene ")
+		}
+
+		for _, s := range src.Sections() {
+			raw := s.Name()
+			if raw == ini.DEFAULT_SECTION {
+				continue
+			}
+			lang, base, has := splitLangPrefix(raw)
+			logical := base
+			if !has {
+				logical = raw
+			}
+			if !interesting(logical) {
+				continue
+			}
+			if has {
+				if lang == "en" {
+					baseSecs = append(baseSecs, secPair{s, logical})
+				} else if lang == curLang {
+					langSecs = append(langSecs, secPair{s, logical})
+				}
+			} else {
+				baseSecs = append(baseSecs, secPair{s, logical})
+			}
+		}
+
+		// one pass over a slice of sections; inject scene carry-over inside that pass only
+		process := func(list []secPair) error {
+			// carry-over across consecutive [Scene N] sections within THIS pass
+			var clearcolor, clearalpha, clearlayerno, layerallpos string
+
+			for _, sp := range list {
+				section := sp.sec
+				sectionName := sp.name // logical (no lang prefix)
+
+				// Inject carry-over keys for scenes (so missing ones inherit within THIS pass)
+				if strings.HasPrefix(strings.ToLower(sectionName), "scene ") {
+					keysToCheck := map[string]*string{
+						"clearcolor":   &clearcolor,
+						"clearalpha":   &clearalpha,
+						"clearlayerno": &clearlayerno,
+						"layerall.pos": &layerallpos,
+					}
+					existing := make(map[string]bool)
+					for _, k := range section.Keys() {
+						if ptr, ok := keysToCheck[strings.ToLower(k.Name())]; ok {
+							*ptr = k.Value()
+							existing[strings.ToLower(k.Name())] = true
+						}
+					}
+					for k, ptr := range keysToCheck {
+						if !existing[k] && *ptr != "" {
+							if _, err := section.NewKey(k, *ptr); err != nil {
+								return fmt.Errorf("failed to add %s to %q: %w", k, section.Name(), err)
+							}
+						}
+					}
+				}
+
+				for _, key := range section.Keys() {
+					keyName := key.Name()
+					value := key.Value()
+					fullKey := strings.ReplaceAll(sectionName, " ", "_") + "." + strings.ReplaceAll(keyName, " ", "_")
+					keyParts := parseQueryPath(fullKey)
+					if err := assignField(&s, keyParts, value, def); err != nil {
+						// keep going; soft-fail like before
+						//fmt.Printf("Warning: Failed to assign key [%s]: %v\n", fullKey, err)
+					}
+				}
+			}
+			return nil
+		}
+
+		// Apply base (unprefixed + en.*) first, then language overrides
+		if err := process(baseSecs); err != nil {
+			return err
+		}
+		// reset of carry-over between passes is handled by new local vars in process()
+		if err := process(langSecs); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	// Apply precedence: struct zero/default tags < defaultStoryboard.ini < user storyboard
+	if err := assignFrom(defaultOnlyIni); err != nil {
+		return nil, err
+	}
+	if err := assignFrom(userIniFile); err != nil {
+		return nil, err
+	}
+
+	s.IniFile = iniFile
+
+	resolveInlineFonts(s.IniFile, s.Def, s.Fnt, s.fntIndexByKey, s.SetValueUpdate)
+	syncFontsMap(&s.SceneDef.Font, s.Fnt, s.fntIndexByKey)
+
+	s.loadFiles()
+
+	str, err := LoadText(def)
+	if err != nil {
+		return nil, err
+	}
+	lines, i := SplitAndTrim(str, "\n"), 0
+	s.At = ReadAnimationTable(s.Sff, &s.Sff.palList, lines, &i)
+	i = 0
+
+	// Storyboard-specific quirk:
+	// enable phantom pixel adjustment on all storyboard animations so that
+	// frames flipped via H or V get an extra pixel of offset.
+	for _, anim := range s.At {
+		if anim != nil {
+			anim.phantomPixel = true
+		}
+	}
+
+	s.populateDataPointers()
+
+	for scene, sceneProps := range s.Scene {
+		sceneName := strings.Replace(scene, "scene_", "scene ", 1)
+		sceneProps.Music = parseMusicSection(pickLangSection(iniFile, sceneName))
+		sceneProps.Music.DebugDump(fmt.Sprintf("Storyboard %s [%s]", def, sceneName))
+	}
+
+	return &s, nil
+}
+
+func (s *Storyboard) loadFiles() {
+	LoadFile(&s.SceneDef.Spr, []string{s.SceneDef.Spr}, func(filename string) error {
+		if filename != "" {
+			var err error
+			s.Sff, err = loadSff(filename, false)
+			if err != nil {
+				sys.errLog.Printf("Failed to load %v: %v", filename, err)
+			}
+		}
+		if s.Sff == nil {
+			s.Sff = newSff()
+		}
+		return nil
+	})
+
+	LoadFile(&s.SceneDef.Model, []string{s.SceneDef.Model}, func(filename string) error {
+		if filename != "" {
+			var err error
+			s.Model, err = loadglTFModel(filename)
+			if err != nil {
+				sys.errLog.Printf("Failed to load %v: %v", filename, err)
+			}
+			sys.mainThreadTask <- func() {
+				gfx.SetModelVertexData(1, s.Model.vertexBuffer)
+				gfx.SetModelIndexData(1, s.Model.elementBuffer...)
+			}
+			sys.runMainThreadTask()
+		}
+		return nil
+	})
+
+	for _, scene := range s.Scene {
+		if scene.Bg.Name != "" {
+			var err error
+			scene.Bg.BGDef, err = loadBGDef(s.Sff, s.Model, s.Def, scene.Bg.Name, 0)
+			if err != nil {
+				sys.errLog.Printf("Failed to load %v (%v): %v\n", scene.Bg.Name, s.Def, err.Error())
+			}
+		}
+		if scene.Bg.BGDef == nil {
+			scene.Bg.BGDef = newBGDef(s.Def)
+		}
+		//scene.Bg.BgClearColor = scene.Bg.BGDef.bgclearcolor
+	}
+
+	LoadFile(&s.SceneDef.Snd, []string{s.SceneDef.Snd}, func(filename string) error {
+		if filename != "" {
+			var err error
+			s.Snd, err = LoadSnd(filename)
+			if err != nil {
+				sys.errLog.Printf("Failed to load %v: %v", filename, err)
+			}
+		}
+		if s.Snd == nil {
+			s.Snd = newSnd()
+		}
+		return nil
+	})
+
+	for key, fnt := range s.SceneDef.Font {
+		LoadFile(&fnt.Font, []string{fnt.Font}, func(filename string) error {
+			re := regexp.MustCompile(`\d+`)
+			i := int(Atoi(re.FindString(key)))
+
+			if filename != "" {
+				var err error
+				s.Fnt[i], err = loadFnt(filename, fnt.Height)
+				registerFontIndex(s.fntIndexByKey, filename, fnt.Height, i)
+				if err != nil {
+					sys.errLog.Printf("Failed to load %v: %v", filename, err)
+				}
+			}
+			if s.Fnt[i] == nil {
+				s.Fnt[i] = newFnt()
+			}
+			// Populate extended properties from the loaded font
+			if s.Fnt[i] != nil {
+				fnt.Type = s.Fnt[i].Type
+				fnt.Size = s.Fnt[i].Size
+				fnt.Spacing = s.Fnt[i].Spacing
+				fnt.Offset = s.Fnt[i].offset
+			}
+			return nil
+		})
+	}
+}
+
+// Initialize struct
+func (s *Storyboard) initStruct() {
+	initMaps(reflect.ValueOf(s).Elem())
+	applyDefaultsToValue(reflect.ValueOf(s).Elem())
+	s.fntIndexByKey = make(map[string]int)
+}
+
+// GetValue retrieves the value based on the query string.
+func (s *Storyboard) GetValue(query string) (interface{}, error) {
+	return GetValue(s, query)
+}
+
+// SetValue sets the value based on the query string and updates the IniFile.
+func (s *Storyboard) SetValueUpdate(query string, value interface{}) error {
+	return SetValueUpdate(s, s.IniFile, query, value)
+}
+
+// Save writes the current IniFile to disk, preserving comments and syntax.
+func (s *Storyboard) Save(file string) error {
+	return SaveINI(s.IniFile, file)
+}
+
+func (s *Storyboard) populateDataPointers() {
+	PopulateDataPointers(s, s.Info.Localcoord)
+}
+
+func (s *Storyboard) reset() {
+	if !sys.middleOfMatch() {
+		sys.bgm.Stop()
+	}
+	s.active = false
+	s.initialized = false
+	s.endTimer = -1
+	s.currentSceneIndex = s.SceneDef.StartScene
+	s.cancel = false
+	for _, sceneProps := range s.Scene {
+		if sceneProps.Bg.Name != "" {
+			sceneProps.Bg.BGDef.Reset()
+		}
+		for _, layerProps := range sceneProps.Layer {
+			if layerProps.AnimData != nil {
+				layerProps.AnimData.Reset()
+				layerProps.AnimData.AddPos(sceneProps.Layerall.Pos[0], sceneProps.Layerall.Pos[1])
+				layerProps.AnimData.palfx = layerProps.PalFx.PalFxData
+				if layerProps.AnimData.palfx != nil {
+					layerProps.AnimData.palfx.clear()
+				}
+				layerProps.AnimData.Update()
+			}
+			if layerProps.TextSpriteData != nil {
+				layerProps.TextSpriteData.Reset()
+				// Storyboard uses uses its own typewriter logic, so disable the internal TextSprite typing.
+				layerProps.TextSpriteData.textDelay = 0
+				// Apply layerall.pos so storyboard [layerall.pos] affects text too
+				layerProps.TextSpriteData.AddPos(sceneProps.Layerall.Pos[0], sceneProps.Layerall.Pos[1])
+				if layerProps.PalFx.PalFxData != nil {
+					layerProps.TextSpriteData.palfx = layerProps.PalFx.PalFxData
+					if layerProps.TextSpriteData.palfx != nil {
+						layerProps.TextSpriteData.palfx.clear()
+					}
+				}
+			}
+			// Reset per-layer typing state
+			layerProps.typedLen = 0
+			layerProps.charDelayCounter = 0
+			layerProps.lineFullyRendered = false
+		}
+	}
+	s.fadePolicy = FadeStop
+}
+
+// sceneHasTyping returns true if any text layer in the scene has text that hasn't finished rendering yet
+func (s *Storyboard) sceneHasTyping(sceneProps *SceneProperties) bool {
+	for _, layerProps := range sceneProps.Layer {
+		if layerProps.TextSpriteData == nil || layerProps.Text == "" {
+			continue
+		}
+		if layerProps.EndTime > 0 && s.counter >= layerProps.EndTime {
+			continue
+		}
+		if !layerProps.lineFullyRendered {
+			return true
+		}
+	}
+	return false
+}
+
+// revealAllSceneText forces all text layers in the scene to be fully rendered
+// immediately, bypassing any remaining typewriter delay and StartTime.
+func (s *Storyboard) revealAllSceneText(sceneProps *SceneProperties) {
+	for _, layerProps := range sceneProps.Layer {
+		if layerProps.TextSpriteData == nil || layerProps.Text == "" {
+			continue
+		}
+		if layerProps.EndTime > 0 && s.counter >= layerProps.EndTime {
+			continue
+		}
+		runeCount := utf8.RuneCountInString(layerProps.Text)
+		layerProps.typedLen = runeCount
+		layerProps.lineFullyRendered = true
+		layerProps.charDelayCounter = 0
+	}
+}
+
+func (s *Storyboard) init() {
+	//if !s.enabled {
+	//	co.initialized = true
+	//	return
+	//}
+	s.sceneKeys = SortedKeys(s.Scene)
+	s.reset()
+	s.counter = 0
+	s.active = true
+	s.initialized = true
+}
+
+func (s *Storyboard) step() {
+	sys.StepCommandLists()
+	sceneKey := s.sceneKeys[s.currentSceneIndex]
+	sceneProps := s.Scene[sceneKey]
+
+	// Cancel handling
+	if sys.esc ||
+		(!sys.motif.AttractMode.Enabled && sys.motif.button(s.SceneDef.Key.Cancel, -1)) ||
+		(!sys.gameRunning && sys.motif.AttractMode.Enabled && sys.credits > 0) {
+		sys.esc = false
+		s.cancel = true
+	}
+
+	// Skip handling
+	skipPressed := sys.motif.button(s.SceneDef.Key.Skip, -1)
+	hasTyping := s.sceneHasTyping(sceneProps)
+
+	// If there is still typewriter text in this scene, treat Skip as "finish text" rather than advancing the scene.
+	if skipPressed && hasTyping {
+		s.revealAllSceneText(sceneProps)
+	}
+
+	// If there is still typewriter text in this scene, treat Skip as "finish text" only.
+	// Only when all text is fully rendered should Skip advance the scene.
+	skipAdvancesScene := skipPressed && !hasTyping
+
+	if s.endTimer == -1 && (s.counter == sceneProps.End.Time || s.cancel || skipAdvancesScene) {
+		userInterrupt := s.cancel || skipAdvancesScene
+		startFadeOut(sceneProps.FadeOut.FadeData, sys.motif.fadeOut, userInterrupt, s.fadePolicy)
+		s.endTimer = s.counter + sys.motif.fadeOut.timeRemaining
+	}
+
+	if s.counter == 0 {
+		if ok := sceneProps.Music.Play("", s.Def); ok {
+			s.musicPlaying = true
+		}
+		sceneProps.FadeIn.FadeData.init(sys.motif.fadeIn, true)
+	}
+
+	if s.Snd != nil {
+		for _, key := range SortedKeys(sceneProps.Sound) {
+			soundProps := sceneProps.Sound[key]
+			if s.counter == soundProps.StartTime {
+				s.Snd.play(
+					[...]int32{soundProps.Value[0], soundProps.Value[1]},
+					soundProps.VolumeScale,
+					soundProps.Pan,
+					soundProps.LoopStart,
+					soundProps.LoopEnd,
+					soundProps.StartPosition,
+				)
+			}
+		}
+	}
+
+	for _, layerProps := range sceneProps.Layer {
+		// Update animations while the layer is actually visible.
+		if s.counter >= layerProps.StartTime && (s.counter < layerProps.EndTime || layerProps.EndTime <= 0) {
+			if layerProps.AnimData != nil {
+				layerProps.AnimData.Update()
+			}
+		}
+		if layerProps.TextSpriteData != nil && layerProps.Text != "" {
+			nextCounter := s.counter + 1
+			if nextCounter >= layerProps.StartTime && (nextCounter < layerProps.EndTime || layerProps.EndTime <= 0) {
+				runeCount := utf8.RuneCountInString(layerProps.Text)
+				if !layerProps.lineFullyRendered {
+					StepTypewriter(
+						layerProps.Text,
+						&layerProps.typedLen,
+						&layerProps.charDelayCounter,
+						&layerProps.lineFullyRendered,
+						layerProps.TextDelay,
+					)
+					if layerProps.typedLen > runeCount {
+						layerProps.typedLen = runeCount
+					}
+					if layerProps.typedLen >= runeCount {
+						layerProps.lineFullyRendered = true
+					}
+				}
+				layerProps.TextSpriteData.wrapText(layerProps.Text, layerProps.typedLen)
+				layerProps.TextSpriteData.Update()
+			}
+		}
+	}
+
+	// Only leave the storyboard once the fade-out has finished.
+	if s.endTimer != -1 && s.counter >= s.endTimer {
+		// Ensure no leftover storyboard fade decks bleed into the next screen.
+		if sys.motif.fadeOut != nil {
+			sys.motif.fadeOut.reset()
+		}
+		if s.cancel {
+			s.currentSceneIndex = len(s.sceneKeys)
+		} else {
+			s.currentSceneIndex++
+		}
+		s.counter = 0
+		s.endTimer = -1
+		if s.currentSceneIndex >= len(s.sceneKeys) {
+			if s.musicPlaying {
+				sys.bgm.Stop()
+			}
+			for _, cl := range sys.commandLists {
+				if cl != nil {
+					cl.BufReset()
+				}
+			}
+			s.active = false
+			// Do not force-reset fadeOut here; it will self-reset after its last draw.
+			return
+		}
+		// Start the next scene's fade-in immediately (same step) so there is no gap frame.
+		nextKey := s.sceneKeys[s.currentSceneIndex]
+		if nextProps, ok := s.Scene[nextKey]; ok && nextProps.FadeIn.FadeData != nil {
+			nextProps.FadeIn.FadeData.init(sys.motif.fadeIn, true)
+		}
+		return
+	}
+
+	s.counter++
+}
+
+func (s *Storyboard) draw(layerno int16) {
+	sceneKey := s.sceneKeys[s.currentSceneIndex]
+	sceneProps := s.Scene[sceneKey]
+
+	if sceneProps.ClearColor[0] >= 0 {
+		sceneProps.RectData.Draw(layerno)
+	}
+
+	if sceneProps.Bg.Name != "" {
+		//if sceneProps.Bg.BgClearColor[0] >= 0 {
+		//	sceneProps.Bg.RectData.Draw(layerno)
+		//}
+		sceneProps.Bg.BGDef.Draw(int32(layerno), 0, 0, 1)
+	}
+
+	for _, key := range SortedKeys(sceneProps.Layer) {
+		layerProps := sceneProps.Layer[key]
+		// If the text was force-finished by Skip, draw it even if StartTime hasn't been reached yet.
+		if (s.counter >= layerProps.StartTime || layerProps.lineFullyRendered) && (s.counter < layerProps.EndTime || layerProps.EndTime <= 0) {
+			if layerProps.AnimData != nil {
+				layerProps.AnimData.Draw(layerno)
+			}
+			if layerProps.TextSpriteData != nil && layerProps.Text != "" {
+				layerProps.TextSpriteData.Draw(layerno)
+			}
+		}
+	}
+}
