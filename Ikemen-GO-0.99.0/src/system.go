@@ -542,61 +542,6 @@ func (s *System) await(fps int) bool {
 func (s *System) update() bool {
 	s.frameCounter++
 	
-
-	// --- INIZIO HOOK RL PPO ---
-	if IsConnected { 
-		
-
-		if len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
-			p1 := s.chars[0][0]
-			p2 := s.chars[1][0]
-
-			// 1. Estrazione dello Stato di Gioco (Ground Truth)
-			currentState := RLGameState{
-				// Dati P1
-        P1_HP:p1.life,
-        P1_X:p1.pos[0],
-        P1_Y:p1.pos[1],
-        P1_Power:p1.power,
-		P1_LifeMax:p1.lifeMax,
-		P1_Facing:p1.facing,
-		P1_AnimNo:p1.animNo,
-
-				// Dati P2
-				P2_HP:p2.life,
-				P2_X:p2.pos[0],
-				P2_Y:p2.pos[1],
-				P2_Power:p2.power,
-	    P2_LifeMax:p2.lifeMax,
-		P2_Facing:p2.facing,
-		P2_AnimNo:p2.animNo,
-
-				GameTick: int(s.frameCounter),
-			}
-		
-            // 2. Chiamata Bloccante: Invia Stato e Aspetta l'Azione da Python
-            // Spostato all'interno del blocco IF per usare currentState
-            action := SyncWithPython(currentState)
-
-            // 3. Applicazione dell'Azione (Reset O Input Injection)
-            if action.Reset {
-                p1.life = p1.lifeMax
-                p2.life = p2.lifeMax
-                p1.power = 0
-                p2.power = 0
-            } else {
-                p1.inputFlag = ConvertActionToInputBits(action, p1.facing)
-                
-                // Opzionale, azzera input P2:
-                // p2.inputFlag = 0
-            }
-		} 
-        
-	}
-	
-	// --- FINE HOOK RL PPO ---
-
-	
 	if s.gameTime == 0 {
 		s.preFightTime = s.frameCounter
 	}
@@ -920,6 +865,60 @@ func (s *System) debugPaused() bool {
 	return s.paused && !s.step && s.oldTickCount < s.tickCount
 }
 func (s *System) tickFrame() bool {
+	// --- INIZIO HOOK RL PPO ---
+	if IsConnected { 
+		
+
+		if len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
+			p1 := s.chars[0][0]
+			p2 := s.chars[1][0]
+
+			// 1. Estrazione dello Stato di Gioco (Ground Truth)
+			currentState := RLGameState{
+				// Dati P1
+        P1_HP:p1.life,
+        P1_X:p1.pos[0],
+        P1_Y:p1.pos[1],
+        P1_Power:p1.power,
+		P1_LifeMax:p1.lifeMax,
+		P1_Facing:p1.facing,
+		P1_AnimNo:p1.animNo,
+
+				// Dati P2
+				P2_HP:p2.life,
+				P2_X:p2.pos[0],
+				P2_Y:p2.pos[1],
+				P2_Power:p2.power,
+	    P2_LifeMax:p2.lifeMax,
+		P2_Facing:p2.facing,
+		P2_AnimNo:p2.animNo,
+
+				GameTick: int(s.frameCounter),
+			}
+		
+            // 2. Chiamata Bloccante: Invia Stato e Aspetta l'Azione da Python
+            // Spostato all'interno del blocco IF per usare currentState
+            action := SyncWithPython(currentState)
+
+            // 3. Applicazione dell'Azione (Reset O Input Injection)
+            if action.Reset {
+                p1.life = p1.lifeMax
+                p2.life = p2.lifeMax
+                p1.power = 0
+                p2.power = 0
+            } else {
+								// Applica input P1
+								p1.key = int(ConvertToInput(action.P1Move, action.P1Btn, p1.facing))
+
+								// Applica input P2 (Self-Play)
+								p2.key = int(ConvertToInput(action.P2Move, action.P2Btn, p2.facing))
+                
+            }
+		} 
+        
+	}
+	
+	// --- FINE HOOK RL PPO ---
 	return (!s.paused || s.step) && s.oldTickCount < s.tickCount
 }
 func (s *System) tickNextFrame() bool {

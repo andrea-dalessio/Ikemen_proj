@@ -1,8 +1,8 @@
 package main
 
 // --- COSTANTI DI INPUT ---
-//  1. Definiamo le DIREZIONI (perché NON esistono in input.go)
-//     Dobbiamo usare il tipo InputBits per compatibilità.
+// 1. Definiamo le DIREZIONI (perché NON esistono in input.go)
+//    Dobbiamo usare il tipo InputBits per compatibilità.
 const (
 	IB_UP    InputBits = 1 << 0
 	IB_DOWN  InputBits = 1 << 1
@@ -13,23 +13,24 @@ const (
 // 2. I TASTI (IB_A, IB_B, ecc.) esistono già in input.go.
 //    NON li ridefiniamo qui per evitare errori di "redeclared".
 
-func ConvertActionToInputBits(action AgentAction, facing float32) InputBits {
-	// CORREZIONE TIPO: Usiamo InputBits invece di int16
+// MODIFICA: La funzione ora accetta stringhe generiche (moveStr, btnStr)
+// Invece di prendere l'intera struct AgentAction.
+func ConvertToInput(moveStr string, btnStr string, facing float32) InputBits {
 	var bits InputBits = 0
 
 	// 1. INPUT DIREZIONALE
-	switch action.P1_Move {
+	switch moveStr {
 	case "U":
-		bits |= IB_UP // Usa la costante definita qui sopra
+		bits |= IB_UP
 	case "D":
-		bits |= IB_DOWN // Usa la costante definita qui sopra
-	case "F": // Forward
+		bits |= IB_DOWN
+	case "F": // Forward (Avanti relativo)
 		if facing > 0 {
 			bits |= IB_RIGHT
 		} else {
 			bits |= IB_LEFT
 		}
-	case "B": // Back
+	case "B": // Back (Indietro relativo)
 		if facing > 0 {
 			bits |= IB_LEFT
 		} else {
@@ -38,9 +39,7 @@ func ConvertActionToInputBits(action AgentAction, facing float32) InputBits {
 	}
 
 	// 2. INPUT TASTI
-	// Qui usiamo le costanti che sono già nel package main (definite in input.go).
-	// NON usare "input.IB_A", usa solo "IB_A".
-	switch action.P1_Btn {
+	switch btnStr {
 	case "a":
 		bits |= IB_A
 	case "b":

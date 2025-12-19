@@ -29,8 +29,10 @@ type RLGameState struct {
 }
 
 type AgentAction struct {
-	P1_Move string `json:"p1_move"`
-	P1_Btn  string `json:"p1_btn"`
+	P1Move string `json:"p1_move"`
+	P1Btn  string `json:"p1_btn"`
+	P2Move string `json:"p2_move"`
+	P2Btn  string `json:"p2_btn"`
 	Reset   bool   `json:"reset"`
 }
 
