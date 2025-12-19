@@ -1753,6 +1753,7 @@ type Char struct {
 	cmd             []CommandList
 	ss              StateState
 	key             int
+	cpuInput        int32 // REMEMBER RL input
 	id              int32
 	helperId        int32
 	helperIndex     int32
