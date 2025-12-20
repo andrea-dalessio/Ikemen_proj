@@ -544,14 +544,12 @@ func (s *System) update() bool {
 	if s.gameTime == 0 {
 		s.preFightTime = s.frameCounter
 	}
-	
+
 	// -- RL LOOP INIZIO --
 	if len(s.chars) >= 2 && len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
 		p1 := s.chars[0][0]
 		p2 := s.chars[1][0]
-		
-		fmt.Println("IN HOOK")
-		
+
 		currentState := RLGameState{
 			P1_HP:      p1.life,
 			P1_X:       p1.pos[0],
@@ -572,14 +570,10 @@ func (s *System) update() bool {
 			GameTick: int(s.frameCounter),
 		}
 		action := SyncWithPython(currentState) //No action if not connected
-		if action.P1Move != "" || action.P1Btn != "" || action.Reset{
-			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", 
-				action.P1Move, 
-				action.P1Btn, 
-				action.Reset
-			)
+		if action.P1Move != "" || action.P1Btn != "" || action.Reset == true {
+			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", action.P1Move, action.P1Btn, action.Reset)
 		}
-		
+
 		if action.Reset {
 			p1.life = p1.lifeMax
 			p2.life = p2.lifeMax
@@ -592,8 +586,10 @@ func (s *System) update() bool {
 	} else {
 		fmt.Println("WAITING FOR CHARS...")
 	}
+
 	// --FINE LOOP RL--
 	if s.fileInput != nil {
+		fmt.Println("File Input non nil")
 		if s.anyHardButton() {
 			s.await(FPS * 4)
 		} else {
@@ -602,9 +598,9 @@ func (s *System) update() bool {
 		keepRunning := s.fileInput.Update()
 		return keepRunning
 	}
-	
 
 	if s.netInput != nil {
+		fmt.Println("Net Input non nil")
 		s.await(FPS)
 		return s.netInput.Update()
 	}
@@ -974,26 +970,26 @@ func (s *System) commandUpdate() {
 				continue
 			}
 			for _, c := range p {
-// -- Commentato perchè va sostituito --			
-//			if (c.helperIndex == 0 ||
-//				c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) &&
-//				c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag) {
-//				hp := c.hitPause() && c.gi().constants["input.pauseonhitpause"] != 0
-//				buftime := Btoi(hp && c.gi().ver[0] != 1)
-//				if s.super > 0 {
-//					if !act && s.super <= s.superendcmdbuftime {
-//						hp = true
-//					}
-//				} else if s.pause > 0 {
-//					if !act && s.pause <= s.pauseendcmdbuftime {
-//						hp = true
-//					}
-//				}
-//				for j := range c.cmd {
-//					c.cmd[j].Step(int32(c.facing), c.key < 0, hp, buftime+Btoi(hp))
-//				}
-//			}
-// --- NUOVO BLOCCO INPUT RL ---
+				// -- Commentato perchè va sostituito --
+				//			if (c.helperIndex == 0 ||
+				//				c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) &&
+				//				c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag) {
+				//				hp := c.hitPause() && c.gi().constants["input.pauseonhitpause"] != 0
+				//				buftime := Btoi(hp && c.gi().ver[0] != 1)
+				//				if s.super > 0 {
+				//					if !act && s.super <= s.superendcmdbuftime {
+				//						hp = true
+				//					}
+				//				} else if s.pause > 0 {
+				//					if !act && s.pause <= s.pauseendcmdbuftime {
+				//						hp = true
+				//					}
+				//				}
+				//				for j := range c.cmd {
+				//					c.cmd[j].Step(int32(c.facing), c.key < 0, hp, buftime+Btoi(hp))
+				//				}
+				//			}
+				// --- NUOVO BLOCCO INPUT RL ---
 				// Verifica se il personaggio è abilitato a ricevere input
 				if c.helperIndex == 0 || (c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) {
 					var step bool
@@ -1014,7 +1010,7 @@ func (s *System) commandUpdate() {
 						y := (c.cpuInput & 256) != 0
 						z := (c.cpuInput & 512) != 0
 						start := (c.cpuInput & 1024) != 0
-						
+
 						// 2. Calcola Direzioni Relative (Avanti/Indietro) basate sul facing
 						var fwd, back bool
 						if c.facing > 0 { // Guarda a Destra
@@ -1026,10 +1022,10 @@ func (s *System) commandUpdate() {
 						// 3. Inietta direttamente nel Buffer (Bypassa hardware)
 						// Parametri: Input(B, D, F, U, a, b, c, x, y, z, s, d, w, m)
 						c.cmd[0].Buffer.Input(back, d, fwd, u, a, b, c_btn, x, y, z, start, false, false, false)
-						
-						step = true     // Conferma che l'input è avvenuto
-						c.cpuInput = 0  // Reset per il prossimo frame
-					
+
+						step = true    // Conferma che l'input è avvenuto
+						c.cpuInput = 0 // Reset per il prossimo frame
+
 					} else {
 						// B. ALTRIMENTI USA INPUT STANDARD (Tastiera/Joystick/AI interna)
 						step = c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag)
@@ -1053,7 +1049,7 @@ func (s *System) commandUpdate() {
 						}
 					}
 				}
-			// -----------------------------
+				// -----------------------------
 			}
 			if r.key < 0 {
 				cc := int32(-1)

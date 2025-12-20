@@ -24,27 +24,26 @@ def main():
     action = {"p1_move": "F", "p1_btn": "", "p2_move": "F", "p2_btn": "", "reset": False}
     msg = json.dumps(action) + "\n" # <--- NOTA IL \n
 
+    cnt = 0
     try:
-        for i in range(120):
+        while True:
             # 1. Aspetta Stato (Sync)
-            print(f"Iter: {i}/120")
-            # line = reader.readline()
-            # if not line: 
-            #     print("Empty")
-            #     break
-            # else:
-            #     print(f"Line recieved: {line}")
+            line = reader.readline()
+            if not line: 
+                print("Empty")
+                break
+            cnt += 1
+            if cnt%50 == 0:
+                cnt = 0
+                print(line)
             
             # 2. Invia Azione
             s.sendall(msg.encode('utf-8'))
-            
-            if i % 10 == 0: print(f"Frame {i} inviato...")
-
     except KeyboardInterrupt:
         print("Program killed")
-
-    print("Test Finito.")
-    s.close()
+    finally:
+        print("Test Finito.")
+        s.close()
 
 if __name__ == "__main__":
     main()

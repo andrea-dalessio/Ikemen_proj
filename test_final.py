@@ -47,8 +47,8 @@ def main():
 
             # B. SCEGLI AZIONE
             msg_to_send = msg_move
-            if frame > 200: msg_to_send = msg_hit
-            if frame > 250: break # Fine test
+            # if frame > 200: msg_to_send = msg_hit
+            # if frame > 250: break # Fine test
 
             # C. INVIA AZIONE (Subito!)
             s.sendall(msg_to_send.encode('utf-8'))
