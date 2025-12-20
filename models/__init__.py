@@ -1,3 +1,2 @@
-from .modelBase import *
-from .student_PPO import *
-from .techer_PPO import *
+from .student_PPO import StudentModel
+from .techer_PPO import TeacherModel

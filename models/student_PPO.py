@@ -2,82 +2,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import json
 
-with open('configs.json', mode='r') as f:
-    CONFIGS = json.load(f)
-
-class Network(nn.Module):
-    def __init__(self, outputSize, device, stackSize=4):
-        super().__init__()
-        self.stackSize = stackSize
-        self.device = device
-        
-        inputChannels = 3 * self.stackSize
-        
-        # 640 x 480
-        
-        # TODO Change the input to the one of ikemen
-        
-        self.conv1 = nn.Conv2d(inputChannels, 32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
-        self.hidden = nn.Linear(4096, 512)
-        self.output = nn.Linear(512, outputSize)
-        
-        self.act = nn.ReLU()
-
-    def forward(self, x):
-        if not isinstance(x, torch.Tensor):
-            x = torch.tensor(x)
-        if x.dim() == 3:
-            x = x.unsqueeze(0)
-        
-        x = x.to(device=self.device)
-        x = x.permute(0,3,1,2)
-        x = x/255.0
-        
-        x = self.act(self.conv1(x))
-        x = self.act(self.conv2(x))
-        x = self.act(self.conv3(x))
-        
-        x = x.reshape(x.size(0), -1)
-        
-        x = self.act(self.hidden(x))
-        x = self.output(x)
-        
-        return x
-
-class MemoryStack:
-    def __init__(self, stackSize=4):
-        self.data = np.zeros((stackSize, 96, 96, 3), dtype=np.uint8)
-        self.size = stackSize
-        self.used = 0
-        self.current = 0
-        
-    def record(self, state):
-        self.data[self.current] = state
-        self.current = (self.current + 1) % self.size
-        self.used = min(self.size, self.used + 1)
-    
-    def reset(self):
-        self.data = np.zeros((self.size, 96, 96, 3), dtype=np.uint8)
-        self.used = 0
-        self.current = 0
-        
-    def get(self):
-        indices = list(range(self.current, self.size)) + list(range(0, self.current))
-        frames = [self.data[i] for i in indices]
-        return np.concatenate(frames, axis=2)
-
-    def ready(self):
-        return self.used == self.size
+from memoryStack import MemoryStack
+from visualNetwork import CNNNetwork
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
 class StudentModel(nn.Module):
-    def __init__(self, device='cpu'):
+    def __init__(self,
+                env,
+                configs:dict, 
+                device='cpu'
+            ):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')
@@ -87,24 +24,27 @@ class StudentModel(nn.Module):
             self.device = torch.device('cpu')
             print(f"Using device: cpu")
         
-        self.debug = False
+        self.CONFIGS = configs
         
-        self.actionSpace = CONFIGS['']
-        self.maxBacktrack = 15
+        self.debug = self.CONFIGS['debug']
+        self.actionSpace = self.CONFIGS['actionSpaceSize']
+        self.gamma = self.CONFIGS['gamma']
+        self.delta = self.CONFIGS['delta']
+        self.episodes = self.CONFIGS['episodes']
+        self.learningRate = self.CONFIGS['lr']
+        self.maxBacktrack = self.CONFIGS['backtrack']
+        self.stackSize = configs['stackSize']
         
-        self.stackSize = 4
-        self.gamma = 0.99
-        self.delta = 0.006
-        self.learningRate = 1e-4
-        self.episodes = 800
+        
+        w = configs['windowW']
+        h = configs['windowH']
+        
+        self.policyEstimator=CNNNetwork(w,h, self.actionSpace, self.device, self.stackSize).to(device)
+        self.valueEstimator=CNNNetwork(w,h, 1, self.device, self.stackSize).to(device)
         
         self.memory = MemoryStack(self.stackSize)
         
-        policy_net = Network(self.actionSpace, self.device, stackSize=self.stackSize)
-        value_net = Network(1, self.device, stackSize=self.stackSize)
-        
-        self.policyEstimator = policy_net.to(self.device)
-        self.valueEstimator = value_net.to(self.device)
+        self.env = env
 
     def FVP(self, v, states, old_dist, damping=1e-1):
         newLogits = self.policyEstimator(states)
@@ -154,57 +94,25 @@ class StudentModel(nn.Module):
                 index += n
     
     def act(self, state, mode='test'):
-        if self.memory.ready():
-            self.memory.record(state)
-        else:
-            for _ in range(self.stackSize):
-                self.memory.record(state)
-                
+        self.memory.record(state)    
         networkInput = self.memory.get()
-        
         with torch.no_grad():
             logits = self.policyEstimator(networkInput)
-
         if mode == 'train':
             dist = torch.distributions.Categorical(logits=logits)
             action = dist.sample()
         else:
             action = logits.argmax(dim=-1)
-
         return action.item()
 
-
-    def runEpisode(self, env):
+    # TODO adapt the episode logic to ikemen
+    def runEpisode(self):
         states   = []
         actions  = []
         rewards  = []
         logProbabilities = []
         
-        state, _ = env.reset()
-        self.memory.reset()
-        duration = 0
-        done = False
-        
-        while not done:
-            action = self.act(state, mode='train')
-            x = self.memory.get()
-
-            with torch.no_grad():
-                logits = self.policyEstimator(x)
-                dist = torch.distributions.Categorical(logits=logits)
-                logps = dist.log_prob(torch.tensor(action, device=self.device)) 
-                
-            state, reward, terminated, truncated, _ = env.step(action)
-            done = terminated or truncated
-            
-            states.append(torch.tensor(x, dtype=torch.uint8))
-            actions.append(action)
-            rewards.append(reward)
-            logProbabilities.append(logps)
-            duration += 1
-            
-        data = (states, actions, rewards, logProbabilities)
-        return data, duration
+        state = self.env.getState()
         
     def computeReturns(self, rewards, duration):
         returns = np.zeros((duration,))
@@ -229,7 +137,6 @@ class StudentModel(nn.Module):
 
     def train(self):
         print("Start training")
-        env = gym.make('CarRacing-v2', continuous=self.continuous)
         optimizer = torch.optim.Adam(self.valueEstimator.parameters(), lr=self.learningRate)
         
         rewardMemory = np.zeros((self.episodes), dtype=np.float32)
@@ -237,7 +144,7 @@ class StudentModel(nn.Module):
         for episode in range(self.episodes):
             if self.debug:
                 print(f"Episode [{episode}/{self.episodes}]: Start")
-            data, duration = self.runEpisode(env)
+            data, duration = self.runEpisode()
             if self.debug:
                 print(f"Done after {duration} time steps")
             states, actions, rewards, old_logps = data
