@@ -2,7 +2,15 @@
   "modes": {
     "versus": {
       "playtime": 0
+    },
+    "training": {
+      "playtime": 0
+    },
+    "arcade": {
+      "playtime": 33.02,
+      "clear": 0,
+      "clearcount": []
     }
   },
-  "playtime": 0
+  "playtime": 33.02
 }

@@ -5,7 +5,6 @@ go/*
 *.log
 *.cmd
 *.bat
-*.sh
 *.png
 save/*
 Ikemen_GO.exe
@@ -55,6 +54,11 @@ external/script/wip/*
 
 # Binaries
 bin/*
+lib/
 
 # Compilation files
 src/*.syso
+
+
+#Extra
+build/ffmpeg*

@@ -8,19 +8,19 @@ PORT = 8080
 def main():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1) # Disabilita buffer Nagle
-    s.settimeout(5.0)
+    # s.settimeout(5.0)
     try:
-        print("⏳ Connessione...")
+        print("Connessione...")
         s.connect((HOST, PORT))
-        print("✅ Connesso! (Modalità RAW)")
+        print("Connesso! (Modalità RAW)")
     except:
-        print("❌ Impossibile connettersi.")
+        print("Impossibile connettersi.")
         return
 
     reader = s.makefile('r', encoding='utf-8')
     
     # 1. Movimento AVANTI per 200 frame (ca. 3 secondi)
-    print("▶ Invio: AVANTI (P1 e P2)")
+    print("Invio: AVANTI (P1 e P2)")
     move_action = {"p1_move": "F", "p1_btn": "", "p2_move": "F", "p2_btn": "", "reset": False}
     msg_move = json.dumps(move_action) + "\n"
     
@@ -28,14 +28,18 @@ def main():
     hit_action = {"p1_move": "", "p1_btn": "a", "p2_move": "", "p2_btn": "b", "reset": False}
     msg_hit = json.dumps(hit_action) + "\n"
 
+    print("Start handle")
+
     try:
         frame = 0
         while True:
             # A. LEGGI STATO (Aspetta il \n da Go)
             line = reader.readline()
             if not line:
-                print("❌ Server disconnesso.")
+                print("Server disconnesso.")
                 break
+            
+            print(line)
             
             # (Opzionale: stampa ogni 60 frame per vedere che scorre)
             if frame % 60 == 0:

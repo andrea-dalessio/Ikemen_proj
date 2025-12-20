@@ -544,59 +544,63 @@ func (s *System) update() bool {
 	if s.gameTime == 0 {
 		s.preFightTime = s.frameCounter
 	}
+	
+	// -- RL LOOP INIZIO --
+	if len(s.chars) >= 2 && len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
+		p1 := s.chars[0][0]
+		p2 := s.chars[1][0]
+		
+		fmt.Println("IN HOOK")
+		
+		currentState := RLGameState{
+			P1_HP:      p1.life,
+			P1_X:       p1.pos[0],
+			P1_Y:       p1.pos[1],
+			P1_Power:   p1.power,
+			P1_LifeMax: p1.lifeMax,
+			P1_Facing:  p1.facing,
+			P1_AnimNo:  p1.animNo,
+
+			P2_HP:      p2.life,
+			P2_X:       p2.pos[0],
+			P2_Y:       p2.pos[1],
+			P2_Power:   p2.power,
+			P2_LifeMax: p2.lifeMax,
+			P2_Facing:  p2.facing,
+			P2_AnimNo:  p2.animNo,
+
+			GameTick: int(s.frameCounter),
+		}
+		action := SyncWithPython(currentState) //No action if not connected
+		if action.P1Move != "" || action.P1Btn != "" || action.Reset{
+			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", 
+				action.P1Move, 
+				action.P1Btn, 
+				action.Reset
+			)
+		}
+		
+		if action.Reset {
+			p1.life = p1.lifeMax
+			p2.life = p2.lifeMax
+			p1.power = 0
+			p2.power = 0
+		} else {
+			p1.cpuInput = int32(ConvertToInput(action.P1Move, action.P1Btn, p1.facing))
+			p2.cpuInput = int32(ConvertToInput(action.P2Move, action.P2Btn, p2.facing))
+		}
+	} else {
+		fmt.Println("WAITING FOR CHARS...")
+	}
+	// --FINE LOOP RL--
 	if s.fileInput != nil {
 		if s.anyHardButton() {
 			s.await(FPS * 4)
 		} else {
 			s.await(FPS)
 		}
-
-		// -- RL LOOP INIZIO --
 		keepRunning := s.fileInput.Update()
-
-		if len(s.chars) >= 2 && len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
-			p1 := s.chars[0][0]
-			p2 := s.chars[1][0]
-			
-			fmt.Println("IN HOOK")
-			
-			currentState := RLGameState{
-				P1_HP:      p1.life,
-				P1_X:       p1.pos[0],
-				P1_Y:       p1.pos[1],
-				P1_Power:   p1.power,
-				P1_LifeMax: p1.lifeMax,
-				P1_Facing:  p1.facing,
-				P1_AnimNo:  p1.animNo,
-
-				P2_HP:      p2.life,
-				P2_X:       p2.pos[0],
-				P2_Y:       p2.pos[1],
-				P2_Power:   p2.power,
-				P2_LifeMax: p2.lifeMax,
-				P2_Facing:  p2.facing,
-				P2_AnimNo:  p2.animNo,
-
-				GameTick: int(s.frameCounter),
-			}
-			action := SyncWithPython(currentState) //No action if not connected
-			
-			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", action.P1Move, action.P1Btn, action.Reset)
-			
-			if action.Reset {
-				p1.life = p1.lifeMax
-				p2.life = p2.lifeMax
-				p1.power = 0
-				p2.power = 0
-			} else {
-				p1.cpuInput = int32(ConvertToInput(action.P1Move, action.P1Btn, p1.facing))
-				p2.cpuInput = int32(ConvertToInput(action.P2Move, action.P2Btn, p2.facing))
-			}
-		} else {
-			fmt.Println("WAITING FOR CHARS...")
-		}
 		return keepRunning
-// --FINE LOOP RL--
 	}
 	
 
