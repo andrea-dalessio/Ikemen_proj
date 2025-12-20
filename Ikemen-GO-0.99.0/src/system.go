@@ -541,62 +541,6 @@ func (s *System) await(fps int) bool {
 
 func (s *System) update() bool {
 	s.frameCounter++
-	
-
-	// --- INIZIO HOOK RL PPO ---
-	if IsConnected { 
-		
-
-		if len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
-			p1 := s.chars[0][0]
-			p2 := s.chars[1][0]
-
-			// 1. Estrazione dello Stato di Gioco (Ground Truth)
-			currentState := RLGameState{
-				// Dati P1
-        P1_HP:p1.life,
-        P1_X:p1.pos[0],
-        P1_Y:p1.pos[1],
-        P1_Power:p1.power,
-		P1_LifeMax:p1.lifeMax,
-		P1_Facing:p1.facing,
-		P1_AnimNo:p1.animNo,
-
-				// Dati P2
-				P2_HP:p2.life,
-				P2_X:p2.pos[0],
-				P2_Y:p2.pos[1],
-				P2_Power:p2.power,
-	    P2_LifeMax:p2.lifeMax,
-		P2_Facing:p2.facing,
-		P2_AnimNo:p2.animNo,
-
-				GameTick: int(s.frameCounter),
-			}
-		
-            // 2. Chiamata Bloccante: Invia Stato e Aspetta l'Azione da Python
-            // Spostato all'interno del blocco IF per usare currentState
-            action := SyncWithPython(currentState)
-
-            // 3. Applicazione dell'Azione (Reset O Input Injection)
-            if action.Reset {
-                p1.life = p1.lifeMax
-                p2.life = p2.lifeMax
-                p1.power = 0
-                p2.power = 0
-            } else {
-                p1.inputFlag = ConvertActionToInputBits(action, p1.facing)
-                
-                // Opzionale, azzera input P2:
-                // p2.inputFlag = 0
-            }
-		} 
-        
-	}
-	
-	// --- FINE HOOK RL PPO ---
-
-	
 	if s.gameTime == 0 {
 		s.preFightTime = s.frameCounter
 	}
@@ -606,14 +550,63 @@ func (s *System) update() bool {
 		} else {
 			s.await(FPS)
 		}
-		return s.fileInput.Update()
+
+		// -- RL LOOP INIZIO --
+		keepRunning := s.fileInput.Update()
+
+		if len(s.chars) >= 2 && len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
+			p1 := s.chars[0][0]
+			p2 := s.chars[1][0]
+			
+			fmt.Println("IN HOOK")
+			
+			currentState := RLGameState{
+				P1_HP:      p1.life,
+				P1_X:       p1.pos[0],
+				P1_Y:       p1.pos[1],
+				P1_Power:   p1.power,
+				P1_LifeMax: p1.lifeMax,
+				P1_Facing:  p1.facing,
+				P1_AnimNo:  p1.animNo,
+
+				P2_HP:      p2.life,
+				P2_X:       p2.pos[0],
+				P2_Y:       p2.pos[1],
+				P2_Power:   p2.power,
+				P2_LifeMax: p2.lifeMax,
+				P2_Facing:  p2.facing,
+				P2_AnimNo:  p2.animNo,
+
+				GameTick: int(s.frameCounter),
+			}
+			action := SyncWithPython(currentState) //No action if not connected
+			
+			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", action.P1Move, action.P1Btn, action.Reset)
+			
+			if action.Reset {
+				p1.life = p1.lifeMax
+				p2.life = p2.lifeMax
+				p1.power = 0
+				p2.power = 0
+			} else {
+				p1.cpuInput = int32(ConvertToInput(action.P1Move, action.P1Btn, p1.facing))
+				p2.cpuInput = int32(ConvertToInput(action.P2Move, action.P2Btn, p2.facing))
+			}
+		} else {
+			fmt.Println("WAITING FOR CHARS...")
+		}
+		return keepRunning
+// --FINE LOOP RL--
 	}
+	
+
 	if s.netInput != nil {
 		s.await(FPS)
 		return s.netInput.Update()
 	}
 	return s.await(FPS)
 }
+
 func (s *System) tickSound() {
 	s.soundChannels.Tick()
 	if !s.noSoundFlg {
@@ -977,24 +970,86 @@ func (s *System) commandUpdate() {
 				continue
 			}
 			for _, c := range p {
-				if (c.helperIndex == 0 ||
-					c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) &&
-					c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag) {
-					hp := c.hitPause() && c.gi().constants["input.pauseonhitpause"] != 0
-					buftime := Btoi(hp && c.gi().ver[0] != 1)
-					if s.super > 0 {
-						if !act && s.super <= s.superendcmdbuftime {
-							hp = true
-						}
-					} else if s.pause > 0 {
-						if !act && s.pause <= s.pauseendcmdbuftime {
-							hp = true
-						}
+// -- Commentato perchè va sostituito --			
+//			if (c.helperIndex == 0 ||
+//				c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) &&
+//				c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag) {
+//				hp := c.hitPause() && c.gi().constants["input.pauseonhitpause"] != 0
+//				buftime := Btoi(hp && c.gi().ver[0] != 1)
+//				if s.super > 0 {
+//					if !act && s.super <= s.superendcmdbuftime {
+//						hp = true
+//					}
+//				} else if s.pause > 0 {
+//					if !act && s.pause <= s.pauseendcmdbuftime {
+//						hp = true
+//					}
+//				}
+//				for j := range c.cmd {
+//					c.cmd[j].Step(int32(c.facing), c.key < 0, hp, buftime+Btoi(hp))
+//				}
+//			}
+// --- NUOVO BLOCCO INPUT RL ---
+				// Verifica se il personaggio è abilitato a ricevere input
+				if c.helperIndex == 0 || (c.helperIndex > 0 && &c.cmd[0] != &r.cmd[0]) {
+					var step bool
+					if c.cpuInput != 0 {
+						fmt.Printf("DEBUG: P%d riceve input %d\n", c.playerNo, c.cpuInput)
 					}
-					for j := range c.cmd {
-						c.cmd[j].Step(int32(c.facing), c.key < 0, hp, buftime+Btoi(hp))
+					// A. SE C'È INPUT DA PYTHON (RL) -> INIEZIONE DIRETTA
+					if c.cpuInput != 0 {
+						// 1. Decodifica i Bit (Standard Mugen/Ikemen)
+						u := (c.cpuInput & 1) != 0
+						d := (c.cpuInput & 2) != 0
+						l := (c.cpuInput & 4) != 0
+						r := (c.cpuInput & 8) != 0
+						a := (c.cpuInput & 16) != 0
+						b := (c.cpuInput & 32) != 0
+						c_btn := (c.cpuInput & 64) != 0
+						x := (c.cpuInput & 128) != 0
+						y := (c.cpuInput & 256) != 0
+						z := (c.cpuInput & 512) != 0
+						start := (c.cpuInput & 1024) != 0
+						
+						// 2. Calcola Direzioni Relative (Avanti/Indietro) basate sul facing
+						var fwd, back bool
+						if c.facing > 0 { // Guarda a Destra
+							fwd, back = r, l
+						} else { // Guarda a Sinistra
+							fwd, back = l, r
+						}
+						fmt.Printf("DEBUG: Frame %d | P%d cpuInput=%d | Bit Fwd=%v\n", s.frameCounter, c.playerNo, c.cpuInput, fwd)
+						// 3. Inietta direttamente nel Buffer (Bypassa hardware)
+						// Parametri: Input(B, D, F, U, a, b, c, x, y, z, s, d, w, m)
+						c.cmd[0].Buffer.Input(back, d, fwd, u, a, b, c_btn, x, y, z, start, false, false, false)
+						
+						step = true     // Conferma che l'input è avvenuto
+						c.cpuInput = 0  // Reset per il prossimo frame
+					
+					} else {
+						// B. ALTRIMENTI USA INPUT STANDARD (Tastiera/Joystick/AI interna)
+						step = c.cmd[0].Input(c.key, int32(c.facing), sys.com[i], c.inputFlag)
+					}
+
+					// C. ESECUZIONE AGGIORNAMENTO (Logica originale mantenuta)
+					if step {
+						hp := c.hitPause() && c.gi().constants["input.pauseonhitpause"] != 0
+						buftime := Btoi(hp && c.gi().ver[0] != 1)
+						if s.super > 0 {
+							if !act && s.super <= s.superendcmdbuftime {
+								hp = true
+							}
+						} else if s.pause > 0 {
+							if !act && s.pause <= s.pauseendcmdbuftime {
+								hp = true
+							}
+						}
+						for j := range c.cmd {
+							c.cmd[j].Step(int32(c.facing), c.key < 0, hp, buftime+Btoi(hp))
+						}
 					}
 				}
+			// -----------------------------
 			}
 			if r.key < 0 {
 				cc := int32(-1)
@@ -1339,6 +1394,7 @@ func (s *System) action() {
 
 	// Run tick frame
 	if s.tickFrame() {
+		s.commandUpdate()
 		s.xmin = s.cam.ScreenPos[0] + s.cam.Offset[0] + s.screenleft
 		s.xmax = s.cam.ScreenPos[0] + s.cam.Offset[0] +
 			float32(s.gameWidth)/s.cam.Scale - s.screenright
