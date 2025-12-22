@@ -580,8 +580,7 @@ func (s *System) update() bool {
 			p1.power = 0
 			p2.power = 0
 		} else {
-			p1.cpuInput = int32(ConvertToInput(action.P1Move, action.P1Btn, p1.facing))
-			p2.cpuInput = int32(ConvertToInput(action.P2Move, action.P2Btn, p2.facing))
+			ApplyNetworkInput(action, p1.facing, p2.facing)
 		}
 	} else {
 		fmt.Println("WAITING FOR CHARS...")
