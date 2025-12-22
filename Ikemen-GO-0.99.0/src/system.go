@@ -1390,7 +1390,7 @@ func (s *System) action() {
 
 	// Run tick frame
 	if s.tickFrame() {
-		s.commandUpdate()
+		// s.commandUpdate()
 		s.xmin = s.cam.ScreenPos[0] + s.cam.Offset[0] + s.screenleft
 		s.xmax = s.cam.ScreenPos[0] + s.cam.Offset[0] +
 			float32(s.gameWidth)/s.cam.Scale - s.screenright

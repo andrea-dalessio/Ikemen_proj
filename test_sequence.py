@@ -9,12 +9,22 @@ PORT = 8080
 # Ogni elemento è: (DURATA_FRAMES, MOVIMENTO, TASTO)
 # Esempio: "Giù" per 30 frame, poi "Avanti" per 10, poi "Pugno(a)" per 5
 ATTACK_SEQUENCE = [
-    (60,  "",  ""),   # 1. Aspetta fermo (Neutral) per 1 sec (60 frame)
-    (30,  "D", ""),   # 2. Abbassati (Crouch)
-    (10,  "F", ""),   # 3. Cammina avanti
-    (5,   "F", "a"),  # 4. Pugno avanti (Active frames)
-    (20,  "F", ""),   # 5. Recovery (continua a premere avanti)
-    (60,  "B", ""),   # 6. Indietreggia (Parata/Block)
+    (10, "",   ""),   # Preparazione
+    
+    # --- Primo Giro (QCF) ---
+    (4,  "D",  ""),   
+    (4,  "DF", ""),   
+    (4,  "F",  "xy"),   # Solo movimento, niente tasto qui
+    
+    # --- Secondo Giro (QCF) ---
+    # Nota: Passare da F subito a D è tecnicamente possibile via script,
+    # ma a volte un frame di "DF" o Neutro nel mezzo aiuta la lettura.
+    (4,  "D",  ""),   
+    (4,  "DF", ""),   
+    
+    # --- Attivazione ---
+    (10, "F",  "y"),  # Qui premi il tasto finale!
+    (40, "F",  ""),   # Tieni premuto avanti durante l'animazione della super
 ] 
 
 def main():
