@@ -1,5 +1,7 @@
 package main
 
+import "strings"
+
 // Helper per premere/rilasciare tasti tramite il motore interno
 // Assumiamo che OnKeyPressed/OnKeyReleased siano disponibili nel package main
 func SimKey(key int, press bool) {
@@ -32,26 +34,29 @@ func processPlayerInput(playerIdx int, move string, btn string, facing float32) 
 	// 1. Decodifica Movimento (Relativo -> Assoluto)
 	var up, down, left, right bool
 
-	if move == "U" {
+	// 1. Verticali (Assoluti)
+	if strings.Contains(move, "U") {
 		up = true
 	}
-	if move == "D" {
+	if strings.Contains(move, "D") {
 		down = true
 	}
 
-	// Logica per Avanti (F) e Indietro (B) basata sulla direzione del personaggio
-	if move == "F" {
+	// 2. Orizzontali (Relativi al Facing)
+	// Se invii "F" (o "DF"), capisce dove guardi e preme la freccia giusta
+	if strings.Contains(move, "F") {
 		if facing > 0 {
-			right = true
+			right = true // Guarda a destra -> Premi Destra
 		} else {
-			left = true
+			left = true // Guarda a sinistra -> Premi Sinistra
 		}
 	}
-	if move == "B" {
+
+	if strings.Contains(move, "B") {
 		if facing > 0 {
-			left = true
+			left = true // Guarda a destra -> Indietro è Sinistra
 		} else {
-			right = true
+			right = true // Guarda a sinistra -> Indietro è Destra
 		}
 	}
 
@@ -63,14 +68,16 @@ func processPlayerInput(playerIdx int, move string, btn string, facing float32) 
 	SimKey(cfg.dR, right)
 
 	// 3. Premi i Tasti Attacco
-	// Qui usiamo i nomi corretti della tua struct KeyConfig (kA, kB, ecc.)
-	SimKey(cfg.kA, btn == "a")
-	SimKey(cfg.kB, btn == "b")
-	SimKey(cfg.kC, btn == "c")
-	SimKey(cfg.kX, btn == "x")
-	SimKey(cfg.kY, btn == "y")
-	SimKey(cfg.kZ, btn == "z")
+	// Usiamo strings.Contains per permettere combo di tasti (es. btn="ab" per EX Move)
+	// Nota: Assicurati di aver importato "strings" in alto nel file.
 
-	// Start (S)
-	SimKey(cfg.kS, btn == "s")
+	SimKey(cfg.kA, strings.Contains(btn, "a"))
+	SimKey(cfg.kB, strings.Contains(btn, "b"))
+	SimKey(cfg.kC, strings.Contains(btn, "c"))
+
+	SimKey(cfg.kX, strings.Contains(btn, "x"))
+	SimKey(cfg.kY, strings.Contains(btn, "y"))
+	SimKey(cfg.kZ, strings.Contains(btn, "z"))
+
+	SimKey(cfg.kS, strings.Contains(btn, "s")) // Start
 }
