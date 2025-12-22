@@ -16,7 +16,7 @@ func ApplyNetworkInput(action AgentAction, p1Facing float32, p2Facing float32) {
 	if len(sys.keyConfig) < 2 {
 		return
 	}
-
+	
 	// --- PLAYER 1 (Indice 0) ---
 	processPlayerInput(0, action.P1Move, action.P1Btn, p1Facing)
 

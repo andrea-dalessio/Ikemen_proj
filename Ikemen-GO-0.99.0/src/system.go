@@ -546,7 +546,11 @@ func (s *System) update() bool {
 	}
 
 	// -- RL LOOP INIZIO --
-	if len(s.chars) >= 2 && len(s.chars[0]) > 0 && len(s.chars[1]) > 0 {
+	if !s.roundResetFlg &&
+		len(s.chars) >= 2 &&
+		len(s.chars[0]) > 0 &&
+		len(s.chars[1]) > 0 {
+
 		p1 := s.chars[0][0]
 		p2 := s.chars[1][0]
 
@@ -569,24 +573,17 @@ func (s *System) update() bool {
 
 			GameTick: int(s.frameCounter),
 		}
-		action := SyncWithPython(currentState) //No action if not connected
-		if action.P1Move != "" || action.P1Btn != "" || action.Reset == true {
-			fmt.Printf("RAW DATA -> Move: '%s' | Btn: '%s' | Reset: %v\n", action.P1Move, action.P1Btn, action.Reset)
-		}
+
+		action := SyncWithPython(currentState)
 
 		if action.Reset {
-			p1.life = p1.lifeMax
-			p2.life = p2.lifeMax
-			p1.power = 0
-			p2.power = 0
-		} else {
-			ApplyNetworkInput(action, p1.facing, p2.facing)
+			s.roundResetFlg = true
 		}
-	} else {
-		fmt.Println("WAITING FOR CHARS...")
-	}
 
-	// --FINE LOOP RL--
+		ApplyNetworkInput(action, p1.facing, p2.facing)
+	}
+	// -- RL LOOP FINE --
+
 	if s.fileInput != nil {
 		fmt.Println("File Input non nil")
 		if s.anyHardButton() {
@@ -2172,6 +2169,7 @@ func (s *System) fight() (reload bool) {
 		if s.roundResetFlg && !s.postMatchFlg {
 			sys.paused = false
 			reset()
+			s.roundResetFlg = false
 		}
 		// Shift+F4 pressed to restart match
 		if s.reloadFlg {

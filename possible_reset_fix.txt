@@ -1,0 +1,65 @@
+var (
+	rlAction     RLAction
+	rlActionLock sync.Mutex
+)
+
+go func() {
+	for {
+		state := <-rlStateChannel // sent from update()
+		action := SyncWithPython(state)
+
+		rlActionLock.Lock()
+		rlAction = action
+		rlActionLock.Unlock()
+	}
+}()
+
+var rlStateChannel = make(chan RLGameState, 1)
+
+// -- RL LOOP INIZIO --
+if !s.roundResetFlg &&
+	len(s.chars) >= 2 &&
+	len(s.chars[0]) > 0 &&
+	len(s.chars[1]) > 0 {
+
+	p1 := s.chars[0][0]
+	p2 := s.chars[1][0]
+
+	state := RLGameState{
+		P1_HP:      p1.life,
+		P1_X:       p1.pos[0],
+		P1_Y:       p1.pos[1],
+		P1_Power:   p1.power,
+		P1_LifeMax: p1.lifeMax,
+		P1_Facing:  p1.facing,
+		P1_AnimNo:  p1.animNo,
+
+		P2_HP:      p2.life,
+		P2_X:       p2.pos[0],
+		P2_Y:       p2.pos[1],
+		P2_Power:   p2.power,
+		P2_LifeMax: p2.lifeMax,
+		P2_Facing:  p2.facing,
+		P2_AnimNo:  p2.animNo,
+
+		GameTick: int(s.frameCounter),
+	}
+
+	// Non-blocking send
+	select {
+	case rlStateChannel <- state:
+	default:
+	}
+
+	// Consume last known action (non-blocking)
+	rlActionLock.Lock()
+	action := rlAction
+	rlActionLock.Unlock()
+
+	if action.Reset {
+		s.roundResetFlg = true
+	}
+
+	ApplyNetworkInput(action, p1.facing, p2.facing)
+}
+// -- RL LOOP FINE --
