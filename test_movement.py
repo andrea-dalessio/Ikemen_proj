@@ -21,7 +21,7 @@ def main():
     # Test: Camminare Avanti per 120 frame
     print("▶ Invio comando: AVANTI per 2 secondi...")
     
-    action = {"p1_move": "F", "p1_btn": "", "p2_move": "F", "p2_btn": "", "reset": False}
+    action = {"p1_move": "F", "p1_btn": "", "p2_move": "B", "p2_btn": "", "reset": False}
     msg = json.dumps(action) + "\n" # <--- NOTA IL \n
 
     cnt = 0
