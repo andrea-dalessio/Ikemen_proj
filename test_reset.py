@@ -20,9 +20,6 @@ def main():
     
     # Test: Camminare Avanti per 120 frame
     print("▶ Invio comando: AVANTI per 2 secondi...")
-    
-    action = {"p1_move": "F", "p1_btn": "", "p2_move": "B", "p2_btn": "", "reset": False}
-    msg = json.dumps(action) + "\n" # <--- NOTA IL \n
 
     cnt = 0
     try:
@@ -32,12 +29,20 @@ def main():
             if not line: 
                 print("Empty")
                 break
-            cnt += 1
-                
+            if cnt == 0:
+                msg = json.dumps({"p1_move": "F", "p1_btn": "", "p2_move": "B", "p2_btn": "", "reset": False}) + "\n"
+                print("Start behaviour")
+                cnt += 1
             if cnt == 360:
-                msg = json.dumps({"p1_move": "F", "p1_btn": "", "p2_move": "B", "p2_btn": "", "reset": True})
-                print("Reset")
-            
+                msg = json.dumps({"p1_move": "", "p1_btn": "", "p2_move": "", "p2_btn": "", "reset": True})+'\n'
+                print("Reset...", end=' ')
+                cnt += 1
+            elif cnt == 361:
+                msg = json.dumps({"p1_move": "", "p1_btn": "", "p2_move": "", "p2_btn": "", "reset": False})+'\n'
+                cnt = 0
+                print("Done")
+            else:
+                cnt += 1
             
             # 2. Invia Azione
             s.sendall(msg.encode('utf-8'))

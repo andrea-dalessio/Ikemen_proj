@@ -92,6 +92,13 @@ var sys = System{
 	windowCentered:       true,
 }
 
+var (
+	rlAction     AgentAction
+	rlActionLock sync.Mutex
+)
+
+var rlStateChannel = make(chan RLGameState, 1)
+
 type TeamMode int32
 
 const (
@@ -369,6 +376,8 @@ type System struct {
 	loopContinue      bool
 }
 
+var resetPending bool
+
 // Initialize stuff, this is called after the config int at main.go
 func (s *System) init(w, h int32) *lua.LState {
 	s.setWindowSize(w, h)
@@ -452,6 +461,19 @@ func (s *System) init(w, h int32) *lua.LState {
 		}
 		s.window.SetIcon(s.windowMainIcon)
 		chk(err)
+
+		resetPending = false
+		go func() {
+			for {
+				state := <-rlStateChannel // sent from update()
+				action := SyncWithPython(state)
+
+				rlActionLock.Lock()
+				rlAction = action
+				rlActionLock.Unlock()
+			}
+		}()
+
 	}
 	// [Icon add end]
 
@@ -541,6 +563,18 @@ func (s *System) await(fps int) bool {
 
 func (s *System) update() bool {
 	s.frameCounter++
+
+	silence := true
+
+	// if s.frameCounter%60 == 0 {
+	// 	fmt.Println("Update still running")
+	// }
+
+	// if s.frameCounter%300 == 0 {
+	// 	fmt.Println("FORCED RESET")
+	// 	resetPending = true
+	// }
+
 	if s.gameTime == 0 {
 		s.preFightTime = s.frameCounter
 	}
@@ -554,7 +588,7 @@ func (s *System) update() bool {
 		p1 := s.chars[0][0]
 		p2 := s.chars[1][0]
 
-		currentState := RLGameState{
+		state := RLGameState{
 			P1_HP:      p1.life,
 			P1_X:       p1.pos[0],
 			P1_Y:       p1.pos[1],
@@ -574,10 +608,30 @@ func (s *System) update() bool {
 			GameTick: int(s.frameCounter),
 		}
 
-		action := SyncWithPython(currentState)
+		// Non-blocking send
+		select {
+		case rlStateChannel <- state:
+		default:
+		}
+
+		// Consume last known action (non-blocking)
+		rlActionLock.Lock()
+		action := rlAction
+		rlActionLock.Unlock()
+
+		if !silence {
+			fmt.Printf("[RL] action type: %T\n", action)
+			fmt.Printf(
+				"[RL] action: Move='%s' Btn='%s' Reset=%v\n",
+				action.P1Move,
+				action.P1Btn,
+				action.Reset,
+			)
+		}
 
 		if action.Reset {
-			s.roundResetFlg = true
+			fmt.Println("Reset flag set")
+			resetPending = true
 		}
 
 		ApplyNetworkInput(action, p1.facing, p2.facing)
@@ -1559,7 +1613,6 @@ func (s *System) action() {
 		s.turbo = spd
 	}
 	s.tickSound()
-	return
 }
 func (s *System) draw(x, y, scl float32) {
 	ecol := uint32(s.envcol[2]&0xff | s.envcol[1]&0xff<<8 |
@@ -2165,10 +2218,17 @@ func (s *System) fight() (reload bool) {
 		// Update game state
 		s.action()
 
+		if resetPending {
+			resetPending = false
+			s.roundResetFlg = true
+		}
+
 		// F4 pressed to restart round
 		if s.roundResetFlg && !s.postMatchFlg {
+			fmt.Println(">>> RESET START")
 			sys.paused = false
 			reset()
+			fmt.Println(">>> RESET END")
 			s.roundResetFlg = false
 		}
 		// Shift+F4 pressed to restart match
