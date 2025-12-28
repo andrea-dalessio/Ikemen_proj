@@ -92,12 +92,14 @@ var sys = System{
 	windowCentered:       true,
 }
 
+// RL vars vvvvvvvvvvvvvvvvvvvvv
 var (
 	rlAction     AgentAction
 	rlActionLock sync.Mutex
 )
-
 var rlStateChannel = make(chan RLGameState, 1)
+
+//RL vars ^^^^^^^^^^^^^^^^^^^
 
 type TeamMode int32
 
@@ -462,6 +464,7 @@ func (s *System) init(w, h int32) *lua.LState {
 		s.window.SetIcon(s.windowMainIcon)
 		chk(err)
 
+		//RL bridge handling vvvvvvvvvvvvvvvvvvv
 		resetPending = false
 		go func() {
 			for {
@@ -473,6 +476,7 @@ func (s *System) init(w, h int32) *lua.LState {
 				rlActionLock.Unlock()
 			}
 		}()
+		//RL bridge handling ^^^^^^^^^^^^^^^^^^^^^
 
 	}
 	// [Icon add end]
@@ -608,7 +612,7 @@ func (s *System) update() bool {
 			GameTick: int(s.frameCounter),
 		}
 
-		// Non-blocking send
+		// Non-blocking send (the select is important)
 		select {
 		case rlStateChannel <- state:
 		default:
