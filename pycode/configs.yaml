@@ -1,0 +1,17 @@
+debug: true
+
+env:
+    button_number: 8
+    channel_number: 3
+    window_width: 640
+    window_height: 480
+    stack_size: 4
+    host: 127.0.0.1
+    max_retries: 15
+    port: 8080
+model:
+    gamma: 0.99
+    delta: 0.006
+    lr: 1e-4
+    episodes: 800
+    backtrack: 15

@@ -161,7 +161,7 @@ class IkemenEnv:
 
         # Assicura di avere uno stato precedente per il calcolo differenziale
         if self.state is None:
-             reward = 0
+            reward = 0
 
         return reward, done
 
