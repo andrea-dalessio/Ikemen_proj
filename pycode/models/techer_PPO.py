@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from stateNetwork import StateNetwork
+from .stateNetwork import StateNetwork
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])

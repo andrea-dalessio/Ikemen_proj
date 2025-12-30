@@ -1,5 +1,6 @@
 from pathlib import Path
-import models
+from .enviroment import IkemenEnvironment
+from .models import TModelBase, SModelBase
 import yaml
 
 configsPath = Path(__file__).resolve().parent / 'configs.yaml'

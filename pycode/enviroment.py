@@ -1,6 +1,9 @@
 import time
 import yaml
+import json
 import socket
+import struct
+import numpy as np
 from pathlib import Path
 
 configsPath = Path(__file__).resolve().parent / 'configs.yaml'
@@ -10,30 +13,152 @@ with open(configsPath, 'r') as configsFile:
     CONFIGS = yaml.safe_load(configsFile)
 
 
+
 class IkemenEnvironment:
     host = CONFIGS['env']['host']
     port = CONFIGS['env']['port']
+    
+    # actionStruct = {
+    #     "p1_move": move, 
+    #     "p1_btn": btn, 
+    #     "p2_move": "",  # Player 2 fermo
+    #     "p2_btn": "", 
+    #     "reset": False
+    # }
+    
+    actionMapMove = {
+        0: "",
+        1: "A",
+        2: "B",
+        3: "X",
+        4: "Y",
+    }
+    
+    actionMapHit = {
+        0: "",
+        1: "F",
+        2: "B",
+        3: "U",
+        4: "D",
+    }
     
     def __init__(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.max_retries = CONFIGS['env']['max_retries']
         self.connected = False
     
+    def recv_exact(self, n:int):
+        if self.socket is None:
+            raise ConnectionError('No socket')
+        elif not self.connected:
+            raise ConnectionError('Not connected')
+        
+        buf = b''
+        while len(buf) < n:
+            chunk = self.socket.recv(n - len(buf))
+            if not chunk:
+                raise ConnectionError
+            buf += chunk
+        return buf
+    
     def connect(self):
-        for _ in range(self.max_retries):
+        if self.socket is None:
+            raise ConnectionError('No socket')
+        elif self.connected:
+            return
+        
+        for i in range(self.max_retries):
             try:
                 self.socket.connect((self.host, self.port))
-            except ConnectionError as e:
-                print(f"Failed connection: {e}")
+                self.connected = True
                 return
+            except ConnectionError as e:
+                print(f"Failed connection [{i+1}/{self.max_retries}]: {e}")
+                time.sleep(2)
         
-        self.connected = True
+        raise ConnectionError("Failed connection")    
     
-    def step(self, action):
-        pass
+    def send(self, data:dict):
+        if self.socket is None:
+            raise ConnectionError('No socket')
+        elif not self.connected:
+            raise ConnectionError('Not connected')
+        
+        payload = json.dumps(data).encode('utf-8')
+        header = struct.pack('>I', len(payload))
+        self.socket.sendall(header + payload)
+        
+    def step(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
+        json_size = struct.unpack('>I', self.recv_exact(4))[0]
+        state = json.loads(self.recv_exact(json_size))
+        
+        img_size = struct.unpack('>I', self.recv_exact(4))[0]
+        img = self.recv_exact(img_size)
+        
+        w, h = state["frame_w"], state["frame_h"]
+        frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
+        
+        nextMove = {
+            "p1_move": self.actionMapMove[actionP1[0]], 
+            "p1_btn": self.actionMapHit[actionP1[1]], 
+            "p2_move": self.actionMapMove[actionP2[0]], 
+            "p2_btn": self.actionMapHit[actionP2[1]], 
+            "reset": False
+        }
+
+        self.send(nextMove)
+        
+        return state, frame
 
     def reset(self):
-        pass
-    
+        if self.socket is None or not self.connected:
+            return
+        try:
+            chunk = self.socket.recv(0)
+            if not chunk:
+                return 
+        except ConnectionError as e:
+            print(f"Connection Error: {e}")
+            return
+
+        self.send({'reset':True})
+        
     def disconnect(self):
-        pass
+        if not self.socket is None and self.connected:
+            self.socket.close()
+            self.socket = None
+            
+if __name__ == '__main__':
+    env = IkemenEnvironment()
+    env.connect()
+    cnt = 0
+    while cnt < 10000:
+        json_size = struct.unpack('>I', env.recv_exact(4))[0]
+        state = json.loads(env.recv_exact(json_size))
+        
+        img_size = struct.unpack('>I', env.recv_exact(4))[0]
+        print(f"IMG Size: {img_size}")
+        img = env.recv_exact(img_size)
+        
+        w, h = state["frame_w"], state["frame_h"]
+        print(f"W: {w}, H: {h}")
+        
+        rawImage = np.frombuffer(img, dtype=np.uint8)
+        
+        print(f"Image shape{rawImage.shape}")
+        
+        frame = rawImage.reshape((h, w, 4))
+        
+        nextMove = {
+        "p1_move": env.actionMapMove[1], 
+        "p1_btn": env.actionMapHit[0], 
+        "p2_move": env.actionMapMove[1], 
+        "p2_btn": env.actionMapHit[0], 
+        "reset": False
+        }
+
+        env.send(nextMove)
+        
+        cnt += 1
+        
+    env.disconnect()

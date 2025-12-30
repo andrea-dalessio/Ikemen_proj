@@ -3,8 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-from memoryStack import MemoryStack
-from visualNetwork import CNNNetwork
+from .memoryStack import MemoryStack
+from .visualNetwork import CNNNetwork
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])

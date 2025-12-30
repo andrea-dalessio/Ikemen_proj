@@ -469,7 +469,10 @@ func (s *System) init(w, h int32) *lua.LState {
 		go func() {
 			for {
 				state := <-rlStateChannel // sent from update()
-				action := SyncWithPython(state)
+				frame := CaptureFrameRGBA()
+				w, h := sys.window.GetSize()
+				// fmt.Printf("W: %d, H: %d frameLen: %d\n", w, h, len(frame))
+				action := SyncWithPython(state, frame, w, h)
 
 				rlActionLock.Lock()
 				rlAction = action

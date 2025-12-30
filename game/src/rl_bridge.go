@@ -2,15 +2,20 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
-	"strings"
 	"sync"
 	"time"
 )
 
 type RLGameState struct {
+	GameTick int `json:"tick"`
+	FrameW   int `json:"frame_w,omitempty"`
+	FrameH   int `json:"frame_h,omitempty"`
+
 	P1_HP      int32   `json:"p1_hp"`
 	P1_X       float32 `json:"p1_x"`
 	P1_Y       float32 `json:"p1_y"`
@@ -26,8 +31,6 @@ type RLGameState struct {
 	P2_LifeMax int32   `json:"p2_life_max"`
 	P2_Facing  float32 `json:"p2_facing"`
 	P2_AnimNo  int32   `json:"p2_anim_no"`
-
-	GameTick int `json:"tick"`
 }
 
 type AgentAction struct {
@@ -46,6 +49,13 @@ var (
 	netReader   *bufio.Reader
 )
 
+func writeU32(conn net.Conn, v uint32) error {
+	var buf [4]byte
+	binary.BigEndian.PutUint32(buf[:], v)
+	_, err := conn.Write(buf[:])
+	return err
+}
+
 func StartRLServer() {
 	fmt.Println("--- RL SERVER: Avvio RAW su porta 8080 ---")
 	ln, err := net.Listen("tcp", ":8080")
@@ -58,22 +68,49 @@ func StartRLServer() {
 	go func() {
 		for {
 			c, err := ln.Accept()
-			if err != nil { continue }
-			
+			if err != nil {
+				continue
+			}
+
 			mu.Lock()
-			if conn != nil { conn.Close() }
+			if conn != nil {
+				conn.Close()
+			}
 			conn = c
 			// TCP No Delay non è accessibile facilmente da net.Conn standard, ma bufio aiuta
 			netReader = bufio.NewReader(conn)
 			IsConnected = true
 			mu.Unlock()
-			
+
 			fmt.Println("--- PYTHON CONNESSO (RAW MODE) ---")
 		}
 	}()
 }
 
-func SyncWithPython(state RLGameState) AgentAction {
+func disconnect() AgentAction {
+	fmt.Println("RL connection lost")
+	conn.Close()
+	IsConnected = false
+	return AgentAction{}
+}
+
+func readAction(conn net.Conn) (AgentAction, error) {
+	var size uint32
+	if err := binary.Read(conn, binary.BigEndian, &size); err != nil {
+		return AgentAction{}, err
+	}
+
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return AgentAction{}, err
+	}
+
+	var action AgentAction
+	err := json.Unmarshal(buf, &action)
+	return action, err
+}
+
+func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -81,42 +118,43 @@ func SyncWithPython(state RLGameState) AgentAction {
 		return AgentAction{}
 	}
 
-	// 1. SERIALIZZA JSON (Senza encoder bufferizzato)
-	bytes, err := json.Marshal(state)
-	if err != nil {
-		return AgentAction{}
-	}
-
-	// 2. INVIA JSON + NEWLINE (Cruciale!)
-	// Impostiamo una deadline per evitare freeze eterni
-	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-	_, err = conn.Write(append(bytes, '\n'))
-	if err != nil {
-		fmt.Println("Write Error (Resetting connection):", err)
-		conn.Close()
-		IsConnected = false
-		return AgentAction{}
-	}
-
-	// 3. RICEVI RISPOSTA (Bloccante con Timeout)
-	conn.SetReadDeadline(time.Now().Add(60 * time.Second)) // 5 secondi max per rispondere
-	line, err := netReader.ReadString('\n')
-	if err != nil {
-		fmt.Println("Read Error (Timeout o Disconnessione):", err)
-		conn.Close()
-		IsConnected = false
-		return AgentAction{}
-	}
-
-	// 4. DESERIALIZZA
-	line = strings.TrimSpace(line)
 	var action AgentAction
-	if len(line) > 0 {
-		err = json.Unmarshal([]byte(line), &action)
-		if err != nil {
-			fmt.Println("JSON Error:", err)
-		}
+
+	state.FrameH = h
+	state.FrameW = w
+
+	stateJSON, err := json.Marshal(state)
+	if err != nil {
+		return AgentAction{}
 	}
 
+	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+
+	// ---- SEND STATE ----
+	if err := writeU32(conn, uint32(len(stateJSON))); err != nil {
+		return disconnect()
+	}
+	if _, err := conn.Write(stateJSON); err != nil {
+		return disconnect()
+	}
+
+	// ---- SEND IMAGE ----
+	if err := writeU32(conn, uint32(len(frame))); err != nil {
+		return disconnect()
+	}
+	if _, err := conn.Write(frame); err != nil {
+		return disconnect()
+	}
+
+	// ---- READ ACTION ----
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	action, err = readAction(conn)
+	if err != nil {
+		return disconnect()
+	}
+
+	// if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &action); err != nil {
+	// 	fmt.Println("JSON Error:", err)
+	// }
 	return action
 }
