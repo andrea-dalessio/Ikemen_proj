@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Helper per premere/rilasciare tasti tramite il motore interno
 // Assumiamo che OnKeyPressed/OnKeyReleased siano disponibili nel package main
@@ -18,7 +21,7 @@ func ApplyNetworkInput(action AgentAction, p1Facing float32, p2Facing float32) {
 	if len(sys.keyConfig) < 2 {
 		return
 	}
-	
+
 	// --- PLAYER 1 (Indice 0) ---
 	processPlayerInput(0, action.P1Move, action.P1Btn, p1Facing)
 
@@ -31,20 +34,24 @@ func processPlayerInput(playerIdx int, move string, btn string, facing float32) 
 	// sys.keyConfig deve essere di tipo []*KeyConfig o []KeyConfig
 	cfg := sys.keyConfig[playerIdx]
 
+	if move != "" || btn != "" {
+		fmt.Printf("Player%d <Move:%s,Button:%s>\n", playerIdx, move, btn)
+	}
+
 	// 1. Decodifica Movimento (Relativo -> Assoluto)
 	var up, down, left, right bool
 
 	// 1. Verticali (Assoluti)
-	if strings.Contains(move, "U") {
+	if strings.Contains(move, "up") {
 		up = true
 	}
-	if strings.Contains(move, "D") {
+	if strings.Contains(move, "down") {
 		down = true
 	}
 
 	// 2. Orizzontali (Relativi al Facing)
 	// Se invii "F" (o "DF"), capisce dove guardi e preme la freccia giusta
-	if strings.Contains(move, "F") {
+	if strings.Contains(move, "forward") {
 		if facing > 0 {
 			right = true // Guarda a destra -> Premi Destra
 		} else {
@@ -52,7 +59,7 @@ func processPlayerInput(playerIdx int, move string, btn string, facing float32) 
 		}
 	}
 
-	if strings.Contains(move, "B") {
+	if strings.Contains(move, "back") {
 		if facing > 0 {
 			left = true // Guarda a destra -> Indietro è Sinistra
 		} else {

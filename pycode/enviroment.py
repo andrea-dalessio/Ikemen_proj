@@ -26,20 +26,20 @@ class IkemenEnvironment:
     #     "reset": False
     # }
     
-    actionMapMove = {
-        0: "",
-        1: "A",
-        2: "B",
-        3: "X",
-        4: "Y",
+    actionMapHit = {
+        0: "-",
+        1: "a",
+        2: "b",
+        3: "x",
+        4: "y",
     }
     
-    actionMapHit = {
-        0: "",
-        1: "F",
-        2: "B",
-        3: "U",
-        4: "D",
+    actionMapMove = {
+        0: "-",
+        1: "forward",
+        2: "back",
+        3: "up",
+        4: "down",
     }
     
     def __init__(self):

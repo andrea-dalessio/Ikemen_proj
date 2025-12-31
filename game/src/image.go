@@ -1329,6 +1329,7 @@ func (s *Sff) getOwnPalSprite(g, n int16, pl *PaletteList) *Sprite {
 	copy(osp.Pal, pal)
 	return &osp
 }
+
 func captureScreen() {
 	width, height := sys.window.GetSize()
 	pixdata := make([]uint8, 4*width*height)
@@ -1358,17 +1359,20 @@ func captureScreen() {
 
 func CaptureFrameRGBA() []byte {
 	width, height := sys.window.GetSize()
-	buf := make([]byte, 4*width*height)
-	gfx.ReadPixels(buf, width, height)
-
-	row := width * 4
-	flipped := make([]byte, len(buf))
-	for y := 0; y < height; y++ {
-		copy(
-			flipped[y*row:(y+1)*row],
-			buf[(height-1-y)*row:(height-y)*row],
-		)
+	pixdata := make([]uint8, 4*width*height)
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	gfx.ReadPixels(pixdata, width, height)
+	for i := 0; i < 4*width*height; i++ {
+		var x, y, j int
+		x = i % (width * 4)
+		y = i / (width * 4)
+		j = x + (height-1-y)*width*4
+		if i%4 == 3 {
+			pixdata[i] = 255
+		}
+		img.Pix[j] = pixdata[i]
 	}
-
-	return flipped
+	out := make([]byte, len(img.Pix))
+	copy(out, img.Pix)
+	return out
 }

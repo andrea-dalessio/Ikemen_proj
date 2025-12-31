@@ -92,15 +92,6 @@ var sys = System{
 	windowCentered:       true,
 }
 
-// RL vars vvvvvvvvvvvvvvvvvvvvv
-var (
-	rlAction     AgentAction
-	rlActionLock sync.Mutex
-)
-var rlStateChannel = make(chan RLGameState, 1)
-
-//RL vars ^^^^^^^^^^^^^^^^^^^
-
 type TeamMode int32
 
 const (
@@ -378,7 +369,17 @@ type System struct {
 	loopContinue      bool
 }
 
+// RL vars vvvvvvvvvvvvvvvvvvvvv
+var (
+	rlAction     AgentAction
+	rlActionLock sync.Mutex
+)
+var rlStateChannel = make(chan RLGameState, 1)
+
 var resetPending bool
+var capturedImage []byte
+
+//RL vars ^^^^^^^^^^^^^^^^^^^
 
 // Initialize stuff, this is called after the config int at main.go
 func (s *System) init(w, h int32) *lua.LState {
@@ -469,7 +470,7 @@ func (s *System) init(w, h int32) *lua.LState {
 		go func() {
 			for {
 				state := <-rlStateChannel // sent from update()
-				frame := CaptureFrameRGBA()
+				frame := capturedImage
 				w, h := sys.window.GetSize()
 				// fmt.Printf("W: %d, H: %d frameLen: %d\n", w, h, len(frame))
 				action := SyncWithPython(state, frame, w, h)
@@ -539,6 +540,7 @@ func (s *System) await(fps int) bool {
 	if !s.frameSkip {
 		// Render the finished frame
 		gfx.EndFrame()
+		capturedImage = CaptureFrameRGBA()
 		s.window.SwapBuffers()
 		// Begin the next frame after events have been processed. Do not clear
 		// the screen if network input is present.
