@@ -12,10 +12,7 @@ import (
 )
 
 type RLGameState struct {
-	GameTick int `json:"tick"`
-	FrameW   int `json:"frame_w,omitempty"`
-	FrameH   int `json:"frame_h,omitempty"`
-
+	GameTick   int     `json:"tick"`
 	P1_HP      int32   `json:"p1_hp"`
 	P1_X       float32 `json:"p1_x"`
 	P1_Y       float32 `json:"p1_y"`
@@ -31,6 +28,12 @@ type RLGameState struct {
 	P2_LifeMax int32   `json:"p2_life_max"`
 	P2_Facing  float32 `json:"p2_facing"`
 	P2_AnimNo  int32   `json:"p2_anim_no"`
+}
+
+type RLMessage struct {
+	State  RLGameState `json:"state"`
+	FrameW int         `json:"frame_w,omitempty"`
+	FrameH int         `json:"frame_h,omitempty"`
 }
 
 type AgentAction struct {
@@ -118,12 +121,16 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 		return AgentAction{}
 	}
 
-	var action AgentAction
+	var (
+		action AgentAction
+		msg    RLMessage
+	)
 
-	state.FrameH = h
-	state.FrameW = w
+	msg.FrameH = h
+	msg.FrameW = w
+	msg.State = state
 
-	stateJSON, err := json.Marshal(state)
+	stateJSON, err := json.Marshal(msg)
 	if err != nil {
 		return AgentAction{}
 	}
@@ -153,8 +160,5 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 		return disconnect()
 	}
 
-	// if err := json.Unmarshal([]byte(strings.TrimSpace(line)), &action); err != nil {
-	// 	fmt.Println("JSON Error:", err)
-	// }
 	return action
 }

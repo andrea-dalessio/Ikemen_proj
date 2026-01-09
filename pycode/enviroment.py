@@ -12,8 +12,6 @@ configsPath = Path(__file__).resolve().parent / 'configs.yaml'
 with open(configsPath, 'r') as configsFile:
     CONFIGS = yaml.safe_load(configsFile)
 
-
-
 class IkemenEnvironment:
     host = CONFIGS['env']['host']
     port = CONFIGS['env']['port']
@@ -127,19 +125,20 @@ class IkemenEnvironment:
 
     def recieve(self):
         json_size = struct.unpack('>I', self.recieveHelper(4))[0]
-        nextState = json.loads(self.recieveHelper(json_size))
+        raw = json.loads(self.recieveHelper(json_size))
+        
+        nextState = raw['state']
         
         img_size = struct.unpack('>I', self.recieveHelper(4))[0]
         img = self.recieveHelper(img_size)
         
-        w, h = nextState["frame_w"], nextState["frame_h"]
+        h = raw["frame_w"]
+        h = raw["frame_h"]
         frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
         
-        reward, done = self.evaluateState(state)
-        
-        return state, frame, reward, done
+        return nextState, frame
 
-    def step(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
+    def executeAction(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
         nextMove = {
             "p1_move": self.actionMapMove[actionP1[0]], 
             "p1_btn": self.actionMapHit[actionP1[1]], 
@@ -163,7 +162,7 @@ class IkemenEnvironment:
         
 
 
-
+#-------------------------------|Test section|-------------------------------------------------
 
 
 if __name__ == '__main__':
@@ -171,32 +170,42 @@ if __name__ == '__main__':
     env.connect()
     cnt = 0
     while cnt < 10000:
-        json_size = struct.unpack('>I', env.recieveHelper(4))[0]
-        state = json.loads(env.recieveHelper(json_size))
-        
-        img_size = struct.unpack('>I', env.recieveHelper(4))[0]
-        print(f"IMG Size: {img_size}")
-        img = env.recieveHelper(img_size)
-        
-        w, h = state["frame_w"], state["frame_h"]
-        print(f"W: {w}, H: {h}")
-        
-        rawImage = np.frombuffer(img, dtype=np.uint8)
-        
-        print(f"Image shape{rawImage.shape}")
-        
-        frame = rawImage.reshape((h, w, 4))
-        
-        nextMove = {
-        "p1_move": env.actionMapMove[1], 
-        "p1_btn": env.actionMapHit[0], 
-        "p2_move": env.actionMapMove[1], 
-        "p2_btn": env.actionMapHit[0], 
-        "reset": False
-        }
+        try: 
+            json_size = struct.unpack('>I', env.recieveHelper(4))[0]
+            raw = json.loads(env.recieveHelper(json_size))
+            print(raw)
+            
+            state = raw['state']
+            
+            img_size = struct.unpack('>I', env.recieveHelper(4))[0]
+            print(f"IMG Size: {img_size}")
+            img = env.recieveHelper(img_size)
+            
+            w = raw["frame_w"]
+            h = raw["frame_h"]
+            print(f"W: {w}, H: {h}")
+            
+            rawImage = np.frombuffer(img, dtype=np.uint8)
+            
+            print(f"Image shape{rawImage.shape}")
+            
+            frame = rawImage.reshape((h, w, 4))
+            
+            nextMove = {
+            "p1_move": env.actionMapMove[1], 
+            "p1_btn": env.actionMapHit[0], 
+            "p2_move": env.actionMapMove[1], 
+            "p2_btn": env.actionMapHit[0], 
+            "reset": False
+            }
 
-        env.send(nextMove)
-        
-        cnt += 1
-        
-    env.disconnect()
+            env.send(nextMove)
+            
+            cnt += 1
+            
+        except KeyboardInterrupt:
+            print("Manual interruption")
+            env.disconnect()
+    if env.connected:
+        env.disconnect()
+        print("Test over")
