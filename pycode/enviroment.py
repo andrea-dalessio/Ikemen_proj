@@ -206,6 +206,7 @@ if __name__ == '__main__':
         except KeyboardInterrupt:
             print("Manual interruption")
             env.disconnect()
+            break
     if env.connected:
         env.disconnect()
         print("Test over")
