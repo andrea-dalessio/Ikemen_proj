@@ -3,6 +3,7 @@ import yaml
 import json
 import socket
 import struct
+import argparse
 import numpy as np
 from pathlib import Path
 
@@ -123,7 +124,43 @@ class IkemenEnvironment:
 
         return reward, done
 
-    def recieve(self):
+    def normalize_anim_smart(self, anim_no):
+        if anim_no >= 5000:
+            compact_anim = 153 + (anim_no - 5000)
+        else:
+            compact_anim = anim_no
+        NEW_MAX = 453.0 
+        compact_anim = min(compact_anim, NEW_MAX)
+        
+        return compact_anim / NEW_MAX
+
+    def normalizeState(self, state):
+        """ Transforms the raw state into a normalized state vector for the teacher model. Good so you don't have to normalize it later!"""
+        p1_x = state.get('p1_x', 0)
+        p2_x = state.get('p2_x', 0)
+        p1_y = state.get('p1_y', 0)
+        p2_y = state.get('p2_y', 0)
+
+        # Using normalized hp values to max values and distance between players
+        state_vector = np.array([
+            state.get('p1_hp', 0) / state.get('p1_life_max', 1000),
+            state.get('p2_hp', 0) / state.get('p2_life_max', 1000),
+            (p2_x - p1_x) / 1000.0,  # Assuming max distance of 1000 units. Safe constant used to keep into account zoom out feature.
+            (p2_y - p1_y) / 600.0,  # Assuming max vertical distance of 600 units (enemy can be launched higher than upper screen bound)
+            (p1_x + 1000.0) / 2000.0,  # Normalized position on max stahge width (2000 units)
+            (p2_x + 1000.0) / 2000.0,
+            state.get('p1_facing', 1),  # Facing direction (1 or -1)
+            state.get('p2_facing', 1),
+            state.get('p1_power', 0) / 100.0,
+            state.get('p2_power', 0) / 100.0,
+            self.normalize_anim_smart(state.get('p1_anim_no', 0)),
+            self.normalize_anim_smart(state.get('p2_anim_no', 0))
+        ], dtype=np.float32) # TODO : Add timer
+        
+        return state_vector
+        
+    
+    def recieve(self, needFrame:bool=False): # Editing module to return frame only if needed. Also correcting bugs and restructuring state vector
         json_size = struct.unpack('>I', self.recieveHelper(4))[0]
         raw = json.loads(self.recieveHelper(json_size))
         
@@ -132,11 +169,15 @@ class IkemenEnvironment:
         img_size = struct.unpack('>I', self.recieveHelper(4))[0]
         img = self.recieveHelper(img_size)
         
-        h = raw["frame_w"]
-        h = raw["frame_h"]
-        frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
+        frame = None
+        if needFrame:
+            w = raw["frame_w"]
+            h = raw["frame_h"]
+            frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
         
         return nextState, frame
+
+
 
     def executeAction(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
         nextMove = {
@@ -164,8 +205,10 @@ class IkemenEnvironment:
 
 #-------------------------------|Test section|-------------------------------------------------
 
+parser = argparse.ArgumentParser(description="Ikemen Environment Test")
+parser.add_argument('--test', action = 'store_true', help='Run environment test')
 
-if __name__ == '__main__':
+if __name__ == '__main__' and parser.parse_args().test:
     env = IkemenEnvironment()
     env.connect()
     cnt = 0

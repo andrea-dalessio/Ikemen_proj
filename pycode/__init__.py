@@ -1,5 +1,5 @@
 from pathlib import Path
-from .enviroment import IkemenEnvironment
+from .environment import IkemenEnvironment
 from .models import TModelBase, SModelBase
 import yaml
 

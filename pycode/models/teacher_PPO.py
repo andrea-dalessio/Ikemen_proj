@@ -32,48 +32,88 @@ class TeacherModel(nn.Module):
         self.maxBacktrack = configs['backtrack']
         self.stackSize = configs['stackSize']
         
+        # Not using the predefined model in stateNetwork.py. Creating a new model here (and then modify the module later on)
+        self.policyEstimator = nn.Sequential(
+            nn.Linear(self.stateSpace * self.stackSize, 256),
+            nn.Tanh(),
+            nn.Linear(256, 128),
+            nn.Tanh(),
+            nn.Linear(128, self.actionSpace)
+        )
         
-        self.policyEstimator = StateNetwork(self.stateSpacea, self.actionSpace, self.device).to(self.device)
-        self.valueEstimator = StateNetwork(self.stateSpace, 1, self.device).to(self.device)
+        self.valueEstimator = nn.Sequential(
+            nn.Linear(self.stateSpace * self.stackSize, 256),
+            nn.Tanh(),
+            nn.Linear(256, 128),
+            nn.Tanh(),
+            nn.Linear(128, 1)
+        )
+        
+    # Changing momentarily any additional functions. Recover them in previous commits if needed.
+    
+    def compute_gae(rewards, values, dones, next_value):
+        """Calcola i vantaggi usando GAE (Generalized Advantage Estimation)."""
+        advantages = torch.zeros_like(rewards)
+        lastgaelam = 0
+        
+        # Si itera all'indietro
+        for t in reversed(range(len(rewards))):
+            if t == len(rewards) - 1:
+                nextnonterminal = 1.0 - dones[t] # Se done=1, next è 0
+                nextvalues = next_value
+            else:
+                nextnonterminal = 1.0 - dones[t+1]
+                nextvalues = values[t+1]
+                
+            delta = rewards[t] + GAMMA * nextvalues * nextnonterminal - values[t]
+            advantages[t] = lastgaelam = delta + GAMMA * GAE_LAMBDA * nextnonterminal * lastgaelam
+            
+        returns = advantages + values
+        return advantages, returns
 
-    def FVP(self, v, states, old_dist, damping=1e-1):
-        newLogits = self.policyEstimator(states)
-        newDistribution = torch.distributions.Categorical(logits=newLogits)
+    def ppo_update(model, optimizer, batch_data):
+        """Esegue l'aggiornamento dei pesi della rete."""
+        # Scompattiamo i dati del buffer
+        b_obs, b_actions, b_logprobs, b_returns, b_advantages, b_values = batch_data
 
-        divergence = torch.distributions.kl_divergence(old_dist, newDistribution).mean()
+        # Ciclo di epoche (Solitamente 4 o 10)
+        for epoch in range(UPDATE_EPOCHS):
+            # Generiamo indici casuali per i mini-batch
+            indices = np.random.permutation(BATCH_SIZE)
+            
+            for start in range(0, BATCH_SIZE, MINIBATCH_SIZE):
+                end = start + MINIBATCH_SIZE
+                mb_idxs = indices[start:end]
 
-        grads_d1 = torch.autograd.grad(divergence, self.policyEstimator.parameters(), create_graph=True)
+                # 1. Forward pass sui dati salvati (Ricalcoliamo logprob e values attuali)
+                # Nota: model.get_action_and_value deve restituire (logits, value)
+                _, new_logprobs, entropy, new_values = model.evaluate(b_obs[mb_idxs], b_actions[mb_idxs])
+                
+                # 2. Calcolo Ratio (Probabilità Nuova / Probabilità Vecchia)
+                logratio = new_logprobs - b_logprobs[mb_idxs]
+                ratio = logratio.exp()
 
-        vectorizeGradients_d1 = vectorize(grads_d1)
-        grad_v = torch.dot(vectorizeGradients_d1, v)
+                # 3. Calcolo PPO Loss (Clipped)
+                mb_advantages = b_advantages[mb_idxs]
+                # Normalizzazione vantaggi (stabilizza il training)
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
-        grads_d2 = torch.autograd.grad(grad_v, self.policyEstimator.parameters())
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS)
+                policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-        vectorizeGradients_d2 = vectorize(grads_d2)
+                # 4. Value Loss (MSE tra valore predetto e rendimento reale)
+                # Spesso si usa anche il clipping sulla value function, qui metto la versione base
+                value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
 
-        return vectorizeGradients_d2 + damping * v
+                # 5. Totale
+                loss = policy_loss - (ENTROPY_COEF * entropy.mean()) + (VALUE_LOSS_COEF * value_loss)
 
-    def conjugateGradient(self, state, old_dist, b, maxIterations=10, tolerance=1e-10):
-        x = torch.zeros_like(b)
-        residual = b.clone()
-        direction = b.clone()
-        rdotr = torch.dot(residual, residual)
-
-        for _ in range(maxIterations):
-            Fvp_p = self.FVP(direction, state, old_dist)
-            alpha = rdotr / (torch.dot(direction, Fvp_p) + 1e-8)
-
-            x = x + alpha * direction
-            residual = residual - alpha * Fvp_p
-            new_rdotr = torch.dot(residual, residual)
-            if new_rdotr < tolerance:
-                break
-
-            beta = new_rdotr / rdotr
-            direction = residual + beta * direction
-            rdotr = new_rdotr
-
-        return x
+                # 6. Backpropagation
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                optimizer.step()
     
     def setParameters(self, parametersVector):
         index = 0
@@ -82,33 +122,12 @@ class TeacherModel(nn.Module):
                 n = param.numel()
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
-            
-    def computeReturns(self, rewards, duration):
-        returns = np.zeros((duration,))
-        G = 0.0
-        for t in reversed(range(duration)):
-            G = rewards[t] + self.gamma * G
-            returns[t] = G
-        return returns
-
-    def computeAdvantage(self, states, returns):
-        values = self.valueEstimator(states)
-        values = values.squeeze(-1)
-        
-        advantages = returns - values.detach()
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return advantages
-
-    def computedSurrogateAdvantage(self, distribution, actions, advantages, old_logps):
-        logProbabilities = distribution.log_prob(actions)
-        surrogateAdvantage = torch.exp(logProbabilities - old_logps) * advantages
-        return surrogateAdvantage.mean()
 
     def save(self):
-        torch.save(self.state_dict(), 'model.pt')
+        torch.save(self.state_dict(), 'teacher_model.pt')
 
     def load(self):
-        self.load_state_dict(torch.load('model.pt', map_location=self.device))
+        self.load_state_dict(torch.load('teacher_model.pt', map_location=self.device))
 
     def to(self, device):
         ret = super().to(device)
