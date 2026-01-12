@@ -6,6 +6,7 @@ import struct
 import argparse
 import numpy as np
 from pathlib import Path
+from gymnasium import spaces
 
 configsPath = Path(__file__).resolve().parent / 'configs.yaml'
 
@@ -24,28 +25,46 @@ class IkemenEnvironment:
     #     "p2_btn": "", 
     #     "reset": False
     # }
+
+    # Defining the action and observation spaces
     
-    actionMapHit = {
-        0: "-",
-        1: "a",
-        2: "b",
-        3: "x",
-        4: "y",
-    }
-    
-    actionMapMove = {
-        0: "-",
-        1: "forward",
-        2: "back",
-        3: "up",
-        4: "down",
-    }
-    
-    def __init__(self):
+    def __init__(self, training_mode:str):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.max_retries = CONFIGS['env']['max_retries']
         self.connected = False
         self.previousState = None
+        
+        self.actionMapHit = {
+            0: "-",
+            1: "a",
+            2: "b",
+            3: "x",
+            4: "y",
+            5: "ab",
+            6: "xy"
+        }
+        
+        self.actionMapMove = {
+            0: "-",
+            1: "F",
+            2: "B",
+            3: "U",
+            4: "D",
+            5: "UF",
+            6: "UB",
+            7: "DF",
+            8: "DB"
+        }        
+        
+        self.action_space = spaces.MultiDiscrete([len(self.actionMapMove), len(self.actionMapHit)])
+        
+        if training_mode == 'teacher':
+            self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(12,), dtype=np.float32)
+        elif training_mode == 'student':
+            self.observation_space = spaces.Box(low=0, high=255, shape=(CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number']), dtype=np.uint8)
+        else:
+            raise ValueError("Invalid training mode. Choose 'teacher' or 'student'.")
+        
 
     def connect(self):
         if self.socket is None:
@@ -93,7 +112,7 @@ class IkemenEnvironment:
         self.socket.sendall(header + payload)
     
 
-    def evaluateState(self, state):
+    def rewardCompute(self, state):
         done = False
         reward = 0
         

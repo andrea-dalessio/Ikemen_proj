@@ -2,14 +2,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-
+import yaml
+from pathlib import Path
+import json
 from .stateNetwork import StateNetwork
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
+configsPath = Path(__file__).resolve().parent / 'configs.yaml'
+
+with open(configsPath, 'r') as configsFile:
+    CONFIGS = yaml.safe_load(configsFile)
+
 class TeacherModel(nn.Module):
-    def __init__(self, env, configs, device='cpu'):
+    def __init__(self, env, configs=CONFIGS, device='cpu'):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')
@@ -21,37 +28,38 @@ class TeacherModel(nn.Module):
         
         self.configs = configs
         
-        self.actionSpace = configs['actionSpaceSize']
-        self.stateSpace = configs['stateSpaceSize']
-        self.debug = configs['debug']
-        self.actionSpace = configs['actionSpaceSize']
-        self.gamma = configs['gamma']
-        self.delta = configs['delta']
-        self.episodes = configs['episodes']
-        self.learningRate = configs['lr']
-        self.maxBacktrack = configs['backtrack']
-        self.stackSize = configs['stackSize']
+        self.gamma = configs['stdPPO']['gamma']
+        self.gae_lambda = configs['stdPPO']['gae_lambda']
+        self.episodes = ...
+        self.lr = configs['stdPPO']['lr']
+        self.clip_epsilon = configs['stdPPO']['clip_epsilon']
+        self.entropy_coef = configs['stdPPO']['entropy_coef']
+        self.value_loss_coef = configs['stdPPO']['value_loss_coef']
+        self.max_grad_norm = configs['stdPPO']['max_grad_norm']
+        self.update_epochs = configs['TeachTrain']['update_epochs']
+        self.batch_size = configs['TeachTrain']['batch_size']
+        self.minibatch_size = configs['TeachTrain']['minibatch_size']
+        self.rollout_steps = configs['TeachTrain']['rollout_steps']
+        
+        state_dim = env.observation_space.shape[0]
+        self.actionsMove = env.action_space.nvec[0]
+        self.actionsHit = env.action_space.nvec[1]
         
         # Not using the predefined model in stateNetwork.py. Creating a new model here (and then modify the module later on)
-        self.policyEstimator = nn.Sequential(
-            nn.Linear(self.stateSpace * self.stackSize, 256),
+        self.featureExtractor = nn.Sequential(
+            nn.Linear(state_dim, 256),
             nn.Tanh(),
             nn.Linear(256, 128),
-            nn.Tanh(),
-            nn.Linear(128, self.actionSpace)
+            nn.Tanh()
         )
         
-        self.valueEstimator = nn.Sequential(
-            nn.Linear(self.stateSpace * self.stackSize, 256),
-            nn.Tanh(),
-            nn.Linear(256, 128),
-            nn.Tanh(),
-            nn.Linear(128, 1)
-        )
+        self.movePolicy = nn.Linear(128, self.actionsMove)
+        self.hitPolicy = nn.Linear(128, self.actionsHit)
+        self.valueEstimator = nn.Linear(128, 1)
         
     # Changing momentarily any additional functions. Recover them in previous commits if needed.
     
-    def compute_gae(rewards, values, dones, next_value):
+    def compute_gae(self, rewards, values, dones, next_value):
         """Calcola i vantaggi usando GAE (Generalized Advantage Estimation)."""
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
@@ -65,24 +73,24 @@ class TeacherModel(nn.Module):
                 nextnonterminal = 1.0 - dones[t+1]
                 nextvalues = values[t+1]
                 
-            delta = rewards[t] + GAMMA * nextvalues * nextnonterminal - values[t]
-            advantages[t] = lastgaelam = delta + GAMMA * GAE_LAMBDA * nextnonterminal * lastgaelam
+            delta = rewards[t] + self.gamma * nextvalues * nextnonterminal - values[t]
+            advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
             
         returns = advantages + values
         return advantages, returns
 
-    def ppo_update(model, optimizer, batch_data):
+    def ppo_update(self, model, optimizer, batch_data):
         """Esegue l'aggiornamento dei pesi della rete."""
         # Scompattiamo i dati del buffer
         b_obs, b_actions, b_logprobs, b_returns, b_advantages, b_values = batch_data
 
         # Ciclo di epoche (Solitamente 4 o 10)
-        for epoch in range(UPDATE_EPOCHS):
+        for epoch in range(self.update_epochs):
             # Generiamo indici casuali per i mini-batch
-            indices = np.random.permutation(BATCH_SIZE)
+            indices = np.random.permutation(self.batch_size)
             
-            for start in range(0, BATCH_SIZE, MINIBATCH_SIZE):
-                end = start + MINIBATCH_SIZE
+            for start in range(0, self.batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
                 mb_idxs = indices[start:end]
 
                 # 1. Forward pass sui dati salvati (Ricalcoliamo logprob e values attuali)
@@ -99,7 +107,7 @@ class TeacherModel(nn.Module):
                 mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - CLIP_EPS, 1 + CLIP_EPS)
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # 4. Value Loss (MSE tra valore predetto e rendimento reale)
@@ -107,18 +115,51 @@ class TeacherModel(nn.Module):
                 value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
 
                 # 5. Totale
-                loss = policy_loss - (ENTROPY_COEF * entropy.mean()) + (VALUE_LOSS_COEF * value_loss)
+                loss = policy_loss - (self.entropy_coef * entropy.mean()) + (self.value_loss_coef * value_loss)
 
                 # 6. Backpropagation
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(model.parameters(), MAX_GRAD_NORM)
+                nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 optimizer.step()
+    
+    def get_action_and_value(self, x, action=None):
+        """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
+        hidden = self.feature_extractor(x)
+        
+        # 1. Calcolo Logits per le due teste
+        logits_move = self.movePolicy(hidden)
+        logits_attack = self.hitPolicy(hidden)
+        
+        # 2. Creazione Distribuzioni
+        dist_move = torch.distributions.Categorical(logits=logits_move)
+        dist_attack = torch.distributions.Categorical(logits=logits_attack)
+        
+        if action is None:
+            # Inferenza: Campioniamo le azioni
+            action_move = dist_move.sample()
+            action_attack = dist_attack.sample()
+            action = torch.stack([action_move, action_attack], dim=1)
+        else:
+            # Training: Usiamo le azioni passate
+            action_move = action[:, 0]
+            action_attack = action[:, 1]
+            
+        # 3. Calcolo Log Probabilità (Somma dei logaritmi per eventi indipendenti)
+        log_prob = dist_move.log_prob(action_move) + dist_attack.log_prob(action_attack)
+        
+        # 4. Entropia
+        entropy = dist_move.entropy() + dist_attack.entropy()
+        
+        # 5. Valore
+        value = self.valueEstimator(hidden)
+        
+        return action, log_prob, entropy, value 
     
     def setParameters(self, parametersVector):
         index = 0
         with torch.no_grad():
-            for param in self.policyEstimator.parameters():
+            for param in self.parameters():
                 n = param.numel()
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
@@ -137,12 +178,18 @@ class TeacherModel(nn.Module):
     def act(self, state, mode='exploit'):
         networkInput = state
         with torch.no_grad():
-            logits = self.policyEstimator(networkInput)
+            logits_move = self.movePolicy(networkInput)
+            logits_attack = self.hitPolicy(networkInput)
         if mode == 'explore':
-            dist = torch.distributions.Categorical(logits=logits)
-            action = dist.sample()
+            dist_move = torch.distributions.Categorical(logits=logits_move)
+            dist_attack = torch.distributions.Categorical(logits=logits_attack)
+            action_move = dist_move.sample()
+            action_attack = dist_attack.sample()
+            action = torch.stack([action_move, action_attack], dim=1)
         else:
-            action = logits.argmax(dim=-1)
+            action_move = logits_move.argmax(dim=-1)
+            action_attack = logits_attack.argmax(dim=-1)
+            action = torch.stack([action_move, action_attack], dim=1)
 
         return action.item()
 

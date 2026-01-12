@@ -9,8 +9,6 @@ env:
     host: 127.0.0.1
     max_retries: 15
     port: 8080
-    state_space: ...
-    action_space: ...
 stdPPO:
     lr: 2.5e-4
     gamma: 0.99
@@ -21,7 +19,7 @@ stdPPO:
     max_grad_norm: 0.5
 TeachTrain:
     rollout_steps: 2048
-    mini_batch_size: 64
+    minibatch_size: 64
     update_epochs: 4
     num_envs: 16
     batch_size: num_envs * rollout_steps
