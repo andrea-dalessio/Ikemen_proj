@@ -19,7 +19,7 @@ from pycode.environment import IkemenEnvironment
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
-configsPath = Path(__file__).resolve().parent / 'configs.yaml'
+configsPath = Path(__file__).resolve().parent.parent / 'configs.yaml'
 
 with open(configsPath, 'r') as configsFile:
     CONFIGS = yaml.safe_load(configsFile)
@@ -94,18 +94,20 @@ class TeacherModel(nn.Module):
         # Scompattiamo i dati del buffer
         b_obs, b_actions, b_logprobs, b_returns, b_advantages, b_values = batch_data
 
+        current_batch_size = b_obs.shape[0]
+        
         # Ciclo di epoche (Solitamente 4 o 10)
         for epoch in range(self.update_epochs):
             # Generiamo indici casuali per i mini-batch
-            indices = np.random.permutation(self.batch_size)
+            indices = np.random.permutation(current_batch_size)
             
-            for start in range(0, self.batch_size, self.minibatch_size):
+            for start in range(0, current_batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_idxs = indices[start:end]
 
                 # 1. Forward pass sui dati salvati (Ricalcoliamo logprob e values attuali)
                 # Nota: model.get_action_and_value deve restituire (logits, value)
-                _, new_logprobs, entropy, new_values = model.evaluate(b_obs[mb_idxs], b_actions[mb_idxs])
+                _, new_logprobs, entropy, new_values = model.get_action_and_value(b_obs[mb_idxs], b_actions[mb_idxs])
                 
                 # 2. Calcolo Ratio (Probabilità Nuova / Probabilità Vecchia)
                 logratio = new_logprobs - b_logprobs[mb_idxs]
@@ -114,7 +116,8 @@ class TeacherModel(nn.Module):
                 # 3. Calcolo PPO Loss (Clipped)
                 mb_advantages = b_advantages[mb_idxs]
                 # Normalizzazione vantaggi (stabilizza il training)
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                if mb_advantages.std() > 1e-8:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
 
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
@@ -135,7 +138,7 @@ class TeacherModel(nn.Module):
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
-        hidden = self.feature_extractor(x)
+        hidden = self.featureExtractor(x)
         
         # 1. Calcolo Logits per le due teste
         logits_move = self.movePolicy(hidden)
@@ -214,7 +217,7 @@ class TeacherModel(nn.Module):
         batch_matches = 0
 
         # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
-        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device)
+        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device).unsqueeze(0)
 
         # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
         if env.previousState is None:
@@ -288,7 +291,7 @@ class TeacherModel(nn.Module):
                     env.previousState = raw_next_state
 
                 # Aggiorniamo il tensore corrente per il prossimo step
-                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device)
+                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device).unsqueeze(0)
 
             # --- 6. BOOTSTRAPPING (Valore finale) ---
             _, _, _, next_value = self.get_action_and_value(obs_tensor)
@@ -360,17 +363,19 @@ class TeacherModel(nn.Module):
 
         return flipped    
     
-    def train(self):
+    def trainPPO(self):
         print(f"Start Self-Play Training on {self.device}")
         
         # 1. SETUP ENV & CONNECTION
         # Inizializziamo l'ambiente
         env = IkemenEnvironment(training_mode='teacher')
         try:
+            env.launch_game()
             env.connect()
             print("Environment connected successfully.")
         except ConnectionError as e:
             print(f"Critical Error: Could not connect to environment. {e}")
+            env.close_game()
             return
 
         # 2. SETUP OPTIMIZER & OPPONENT
@@ -392,6 +397,7 @@ class TeacherModel(nn.Module):
             env.previousState = raw_init # Inizializziamo per il reward
         except Exception as e:
             print(f"Error getting initial state: {e}")
+            env.close_game()
             return
 
         # Variabili Loop
@@ -439,4 +445,4 @@ class TeacherModel(nn.Module):
                 print(f"Checkpoint saved at update {update}")
 
         print("Training completed.")
-        env.disconnect()
+        env.close_game()

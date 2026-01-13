@@ -1,6 +1,8 @@
 import time
 import yaml
 import json
+import os
+import subprocess
 import socket
 import struct
 import argparse
@@ -65,6 +67,8 @@ class IkemenEnvironment:
         else:
             raise ValueError("Invalid training mode. Choose 'teacher' or 'student'.")
         
+        # Here's the subprocess constructor :)
+        self.game_process = None
 
     def connect(self):
         if self.socket is None:
@@ -82,10 +86,40 @@ class IkemenEnvironment:
                 time.sleep(2)
         raise ConnectionError("Failed connection")    
     
+    # Here you launch the game!
+    def launch_game(self):
+        game_path = CONFIGS['env']['game_path']
+        if not os.path.exists(game_path):
+            raise FileNotFoundError(f"Game executable not found at {game_path}")
+        
+        launch_args = [game_path, '-p1', 'kfm', '-p2', 'kfm', '-ai', '0']
+        
+        print(f"Launching Ikemen GO from {game_path}...")
+        
+        try:
+            self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("Game launched, waiting for server...")
+            time.sleep(3)
+        except Exception as e:
+            print(f"Failed to launch game: {e}")
+            raise e
+    
     def disconnect(self):
         if not self.socket is None and self.connected:
             self.socket.close()
             self.socket = None
+
+    def close_game(self):
+        self.disconnect()
+        if self.game_process is not None:
+            print("Closing Ikemen GO...")
+            self.game_process.terminate()
+            try:
+                self.game_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.game_process.kill()
+                print("Game process killed because it crashed.")
+            self.game_process = None
     
     def recieveHelper(self, n:int):
         if self.socket is None:

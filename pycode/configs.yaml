@@ -9,6 +9,7 @@ env:
     host: 127.0.0.1
     max_retries: 15
     port: 8080
+    game_path: /home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/Ikemen_GO_Linux
 stdPPO:
     lr: 2.5e-4
     gamma: 0.99
