@@ -5,7 +5,16 @@ import numpy as np
 import yaml
 from pathlib import Path
 import json
-from .stateNetwork import StateNetwork
+import sys
+import copy
+from collections import deque
+import struct
+
+# Include parent folder to get env
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+#Include now env
+from pycode.environment import IkemenEnvironment
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
@@ -30,7 +39,7 @@ class TeacherModel(nn.Module):
         
         self.gamma = configs['stdPPO']['gamma']
         self.gae_lambda = configs['stdPPO']['gae_lambda']
-        self.episodes = ...
+        self.episodes = 100
         self.lr = configs['stdPPO']['lr']
         self.clip_epsilon = configs['stdPPO']['clip_epsilon']
         self.entropy_coef = configs['stdPPO']['entropy_coef']
@@ -56,6 +65,7 @@ class TeacherModel(nn.Module):
         self.movePolicy = nn.Linear(128, self.actionsMove)
         self.hitPolicy = nn.Linear(128, self.actionsHit)
         self.valueEstimator = nn.Linear(128, 1)
+        self.to(self.device)
         
     # Changing momentarily any additional functions. Recover them in previous commits if needed.
     
@@ -193,171 +203,240 @@ class TeacherModel(nn.Module):
 
         return action.item()
 
-    # TODO adapt the episode logic to ikemen
-    def runEpisode(self, env):
-        # states   = []
-        # actions  = []
-        # rewards  = []
-        # logProbabilities = []
+    # TODO : Clean accordingly...
+    def runEpisode(self, env, last_obs, rollout_steps, opponent_model):
+        """
+        Raccoglie dati simulando un loop 'step' manuale poiché l'env non ne ha uno unificato.
+        """
+        b_obs, b_actions, b_logprobs, b_rewards, b_dones, b_values = [], [], [], [], [], []
         
-        # state, _ = self.env.reset()
-        # self.memory.reset()
-        # duration = 0
-        # done = False
-        
-        # while not done:
-        #     action = self.act(state, mode='train')
-        #     x = self.memory.get()
+        batch_wins = 0
+        batch_matches = 0
 
-        #     with torch.no_grad():
-        #         logits = self.policyEstimator(x)
-        #         dist = torch.distributions.Categorical(logits=logits)
-        #         logps = dist.log_prob(torch.tensor(action, device=self.device)) 
-                
-        #     state, reward, terminated, truncated, _ = env.step(action)
-        #     done = terminated or truncated
-            
-        #     states.append(torch.tensor(x, dtype=torch.uint8))
-        #     actions.append(action)
-        #     rewards.append(reward)
-        #     logProbabilities.append(logps)
-        #     duration += 1
-        
-        data = ...
-        duration = ...
-        
-        # data = (states, actions, rewards, logProbabilities)
-        return data, duration
+        # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
+        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device)
 
-def train(self):
-    print("Start training")
-    optimizer = torch.optim.Adam(self.valueEstimator.parameters(), lr=self.learningRate)
-    
-    rewardMemory = np.zeros((self.episodes), dtype=np.float32)
+        # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
+        if env.previousState is None:
+             # Hack: se non c'è previousState, usiamo quello che abbiamo appena normalizzato (non perfetto ma evita crash)
+             pass 
 
-    for episode in range(self.episodes):
-        if self.debug:
-            print(f"Episode [{episode}/{self.episodes}]: Start")
-        data, duration = self.runEpisode()
-        if self.debug:
-            print(f"Done after {duration} time steps")
-        states, actions, rewards, old_logps = data
-        returns = self.computeReturns(rewards, duration)
-        
-        states = torch.stack(states).to(self.device)
-        actions = torch.tensor(actions, dtype=torch.uint8, device=self.device)
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        old_logps = torch.stack(old_logps).detach().to(self.device)
-        
-        rewardMemory[episode] = sum(rewards)
-        
-        new_values = self.valueEstimator(states)
-        valueLoss = F.mse_loss(new_values.squeeze(-1), returns)
-        if self.debug:    
-            print(f"{valueLoss}")
-        
-        #Jump start value estimator
-        if episode < 40:
-            optimizer.zero_grad()
-            valueLoss.backward()
-            optimizer.step()
-            if self.debug:
-                print("Warmup step, skip policy update")
-            else:
-                episodeMetric = rewardMemory[0:episode].mean()
-                print(f"{episode}:{episodeMetric:.3f},{valueLoss:.3f}")
-            continue      
-        
-        if self.debug:
-            print("Computes advantages...", end=' ')
-        advantages = self.computeAdvantage(states, returns)
-        if self.debug:
-            print("Done\nComputing surrogate loss...", end=' ')
-        
-        new_logits = self.policyEstimator(states)
-        new_distribution = torch.distributions.Categorical(logits=new_logits)
-        surrogateAdvantage = self.computedSurrogateAdvantage(
-            new_distribution, 
-            actions, 
-            advantages, 
-            old_logps
-        )
-        
-        if self.debug:
-            print(f'{surrogateAdvantage}\nValue loss... ', end=' ')
-        
-        if self.debug:
-            print("Computing update step...", end=' ')
         with torch.no_grad():
-            old_logits = self.policyEstimator(states)
-            old_dist = torch.distributions.Categorical(logits=old_logits)
+            for step in range(rollout_steps):
+                # --- 1. POLICY INFERENZA ---
+                # Player 1 (Teacher)
+                a1, logp1, _, v1 = self.get_action_and_value(obs_tensor)
+                
+                # Player 2 (Opponent) - Vede lo stato FLIPPATO
+                opp_obs_tensor = self.flip_observation(obs_tensor)
+                a2, _, _, _ = opponent_model.get_action_and_value(opp_obs_tensor)
+                
+                # --- 2. PREPARAZIONE AZIONI ---
+                # Il modello restituisce tensori [MoveIdx, BtnIdx]. L'env vuole tuple (int, int).
+                # Convertiamo: Tensor GPU -> Numpy -> Lista -> Tupla
+                act_p1_tuple = tuple(a1.cpu().numpy().flatten().tolist()) # Es: (1, 0)
+                act_p2_tuple = tuple(a2.cpu().numpy().flatten().tolist()) 
+
+                # --- 3. INTERAZIONE ENV (Manuale) ---
+                # A. Invia azioni
+                env.executeAction(act_p1_tuple, act_p2_tuple)
+                
+                # B. Ricevi nuovo stato grezzo
+                # Nota: needFrame=False perché il teacher usa solo vettori
+                try:
+                    raw_next_state, _ = env.recieve(needFrame=False)
+                except (ConnectionError, struct.error) as e:
+                    print(f"Errore ricezione dati: {e}. Interrompo rollout.")
+                    break
+
+                # C. Calcola Reward e Done
+                # Nota: rewardCompute usa env.previousState. Dobbiamo assicurarci che sia settato.
+                # Se env.recieve non aggiorna env.previousState, lo facciamo noi alla fine del ciclo.
+                reward, done = env.rewardCompute(raw_next_state)
+                
+                # D. Normalizza il nuovo stato per la rete neurale
+                next_obs_numpy = env.normalizeState(raw_next_state)
+                
+                # --- 4. SALVATAGGIO DATI ---
+                b_obs.append(obs_tensor)
+                b_actions.append(a1)
+                b_logprobs.append(logp1)
+                b_values.append(v1.flatten())
+                b_rewards.append(torch.tensor(reward, dtype=torch.float32).to(self.device))
+                b_dones.append(torch.tensor(done, dtype=torch.float32).to(self.device))
+                
+                # --- 5. GESTIONE FINE EPISODIO (RESET) ---
+                if done:
+                    # Tracking
+                    batch_matches += 1
+                    if reward > 0: batch_wins += 1 # Assumendo reward positivo per vittoria
+                    
+                    # Reset dell'ambiente
+                    env.reset()
+                    
+                    # Dopo il reset, dobbiamo ricevere il nuovo stato iniziale pulito
+                    try:
+                        raw_reset_state, _ = env.recieve(needFrame=False)
+                        next_obs_numpy = env.normalizeState(raw_reset_state)
+                        # Resettiamo anche il previousState dell'env per evitare reward enormi al primo frame
+                        env.previousState = raw_reset_state 
+                    except Exception as e:
+                        print(f"Errore durante reset: {e}")
+                        break
+                else:
+                    # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
+                    env.previousState = raw_next_state
+
+                # Aggiorniamo il tensore corrente per il prossimo step
+                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device)
+
+            # --- 6. BOOTSTRAPPING (Valore finale) ---
+            _, _, _, next_value = self.get_action_and_value(obs_tensor)
+            next_value = next_value.flatten()
+
+        # --- 7. IMPACCHETTAMENTO ---
+        t_obs = torch.stack(b_obs)
+        t_actions = torch.stack(b_actions)
+        t_logprobs = torch.stack(b_logprobs)
+        t_values = torch.stack(b_values)
+        t_rewards = torch.stack(b_rewards)
+        t_dones = torch.stack(b_dones)
+
+        advantages, returns = self.compute_gae(t_rewards, t_values, t_dones, next_value)
+
+        flat_obs = t_obs.view(-1, t_obs.shape[-1])
+        flat_actions = t_actions.view(-1, t_actions.shape[-1])
+        flat_logprobs = t_logprobs.view(-1)
+        flat_returns = returns.view(-1)
+        flat_advantages = advantages.view(-1)
+        flat_values = t_values.view(-1)
+
+        batch_data = (flat_obs, flat_actions, flat_logprobs, flat_returns, flat_advantages, flat_values)
         
-        self.policyEstimator.zero_grad()
-        gradient = torch.autograd.grad(
-            surrogateAdvantage, 
-            self.policyEstimator.parameters(), 
-            retain_graph=True
-        )
-        g = vectorize(gradient)
+        # Calcolo Win Rate
+        win_rate = batch_wins / batch_matches if batch_matches > 0 else 0.0
         
-        stepDir = self.conjugateGradient(states, old_dist, g)
-        stepSizeDen = torch.dot(stepDir, self.FVP(stepDir, states, old_dist))
-        stepSize = torch.sqrt(2 * self.delta /(stepSizeDen + 1e-8))
-        stepSize = torch.clamp(stepSize, 0.0, 1.0)
-        fullStep = stepDir * stepSize
-        if self.debug:
-            print("Done")
+        # Restituiamo next_obs (in formato numpy) per mantenere la continuità nel loop principale
+        return batch_data, next_obs_numpy, win_rate
 
-        # Line search
-        if self.debug:
-            print("Starting line search")
-        currentParams = vectorize(self.policyEstimator.parameters())
-        success = False
-        stepFraction = 1
-        for _ in range(self.maxBacktrack):
-            candidateParams = currentParams + stepFraction * fullStep
-            self.setParameters(candidateParams)
-            
-            # Compute new surrogate and KL
-            with torch.no_grad():
-                new_logits = self.policyEstimator(states)
-                new_dist = torch.distributions.Categorical(logits=new_logits)
-                new_surrogateAdvantage = self.computedSurrogateAdvantage(
-                    new_dist, 
-                    actions, 
-                    advantages, 
-                    old_logps
-                )
+    def flip_observation(self, obs):
+        """ Flips observation for opponent's perspective """
+        
+        flipped = obs.clone()
 
-                divergence = torch.distributions.kl_divergence(old_dist, new_dist).mean()
+        # From our 12-dim observation vec:
+        # 0: P1 HP,       1: P2 HP
+        # 2: Rel X,       3: Rel Y
+        # 4: P1 Abs X,    5: P2 Abs X
+        # 6: P1 Facing,   7: P2 Facing
+        # 8: P1 Power,    9: P2 Power
+        # 10: P1 Anim,    11: P2 Anim
 
-            if self.debug:
-                print(f"Improvement: {new_surrogateAdvantage - surrogateAdvantage}")
-                print(f"Divergence: {divergence}")
-            if new_surrogateAdvantage > surrogateAdvantage and divergence <= self.delta:
-                if self.debug:
-                    print(f"Line search successful, reduction factor: {stepFraction:.4f}")
-                success = True
-                break
-            
-            else:
-                stepFraction /= 2
-                if self.debug:
-                    print(f"Candidate rejected, new fraction: {stepFraction}")
+        # HP
+        flipped[..., 0] = obs[..., 1]
+        flipped[..., 1] = obs[..., 0]
+        
+        # Absolute X
+        flipped[..., 4] = obs[..., 5]
+        flipped[..., 5] = obs[..., 4]
+        
+        # Facing
+        flipped[..., 6] = obs[..., 7]
+        flipped[..., 7] = obs[..., 6]
+        
+        # Power
+        flipped[..., 8] = obs[..., 9]
+        flipped[..., 9] = obs[..., 8]
+        
+        # Anim
+        flipped[..., 10] = obs[..., 11]
+        flipped[..., 11] = obs[..., 10]
+
+        # X distance flip: Se P2 è a dx (+), per P2 P1 è a sx (-)
+        flipped[..., 2] = -obs[..., 2]
+        
+        # Y distance flip: Se P2 è sopra (+), per P2 P1 è sotto (-)
+        flipped[..., 3] = -obs[..., 3]
+
+        return flipped    
     
-        if not success:
-            self.setParameters(currentParams)
-            if self.debug:
-                print('Line search failed!')
+    def train(self):
+        print(f"Start Self-Play Training on {self.device}")
         
-        optimizer.zero_grad()
-        valueLoss.backward()
-        optimizer.step()
+        # 1. SETUP ENV & CONNECTION
+        # Inizializziamo l'ambiente
+        env = IkemenEnvironment(training_mode='teacher')
+        try:
+            env.connect()
+            print("Environment connected successfully.")
+        except ConnectionError as e:
+            print(f"Critical Error: Could not connect to environment. {e}")
+            return
+
+        # 2. SETUP OPTIMIZER & OPPONENT
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         
-        episodeMetric = rewardMemory[episode-20:episode].mean()
-        
-        if self.debug:
-            print(f'Episode {episode}> Recent Mean Reward: {episodeMetric:.2f},Current Reward:{rewardMemory[episode]}, Value Loss: {valueLoss.item():.2f}, Divergence: {divergence.item():.6f}')
-        else:
-            print(f'{episode}>{episodeMetric:.3f},{rewardMemory[episode]},{valueLoss.item():.3f},{divergence.item():.3f}')
-    return
+        # Opponent (Copia congelata)
+        opponent_model = copy.deepcopy(self)
+        opponent_model.to(self.device)
+        opponent_model.eval()
+        for param in opponent_model.parameters():
+            param.requires_grad = False
+
+        # 3. PREPARAZIONE STATO INIZIALE
+        # Facciamo un reset e una prima lettura per avere 'last_obs' valido
+        env.reset()
+        try:
+            raw_init, _ = env.recieve(needFrame=False)
+            last_obs = env.normalizeState(raw_init)
+            env.previousState = raw_init # Inizializziamo per il reward
+        except Exception as e:
+            print(f"Error getting initial state: {e}")
+            return
+
+        # Variabili Loop
+        total_updates = self.episodes
+        global_step = 0
+        win_rate_history = deque(maxlen=5)
+
+        # --- TRAINING LOOP ---
+        for update in range(1, total_updates + 1):
+            
+            # A. RACCOLTA DATI
+            batch_data, next_obs, win_rate = self.runEpisode(
+                env, 
+                last_obs, 
+                self.rollout_steps, 
+                opponent_model
+            )
+            
+            # Aggiorniamo stato e contatori
+            last_obs = next_obs
+            global_step += self.rollout_steps
+            
+            # Tracking
+            win_rate_history.append(win_rate)
+            avg_win_rate = sum(win_rate_history) / len(win_rate_history) if len(win_rate_history) > 0 else 0.0
+            
+            # B. UPDATE PPO (LEARNER)
+            self.ppo_update(self, optimizer, batch_data)
+            
+            # C. LOGGING
+            avg_return = batch_data[3].mean().item()
+            print(f"Update {update}/{total_updates} | Steps: {global_step} | "
+                  f"Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
+
+            # D. OPPONENT UPGRADE LOGIC
+            # Se il learner vince > 60% delle volte, diventa il nuovo maestro
+            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
+                print("🚀 UPGRADE: Opponent updated to current Learner policy.")
+                opponent_model.load_state_dict(self.state_dict())
+                win_rate_history.clear()
+            
+            # E. SAVE CHECKPOINT
+            if update % 10 == 0:
+                self.save()
+                print(f"Checkpoint saved at update {update}")
+
+        print("Training completed.")
+        env.disconnect()

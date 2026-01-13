@@ -196,8 +196,6 @@ class IkemenEnvironment:
         
         return nextState, frame
 
-
-
     def executeAction(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
         nextMove = {
             "p1_move": self.actionMapMove[actionP1[0]], 

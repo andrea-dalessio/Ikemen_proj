@@ -10,8 +10,17 @@ args = parser.parse_args()
 
 # --- Teacher Training Mode ---
 if args.teacherTrain:
-    model = TeacherModel()
     env = IkemenEnvironment()
+    model = TeacherModel(env)
+    model.train()
+    
+elif args.studentTrain:
+    model = StudentModel()
+    model.train()
+    
+elif args.eval:
+    model = StudentModel()
+    model.evaluate()
 
-    env.connect()
+    
 
