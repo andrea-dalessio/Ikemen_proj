@@ -5,7 +5,6 @@ import os
 import subprocess
 import socket
 import struct
-import argparse
 import numpy as np
 from pathlib import Path
 from gymnasium import spaces
@@ -69,6 +68,40 @@ class IkemenEnvironment:
         
         # Here's the subprocess constructor :)
         self.game_process = None
+
+    def wait_for_match_start(self, timeout=30):
+        """
+        Handshake protocol
+        """
+        print("Syncing with game...")
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            try:
+                # 1. Invia un comando "tutto fermo" per svegliare il server
+                # Nota: usa gli indici 0 (Nessun movimento, Nessun attacco)
+                # Adatta gli indici se 0 non è "Nothing" nella tua mappa
+                self.executeAction((0, 0), (0, 0)) 
+                
+                # 2. Prova a leggere lo stato
+                # Usiamo un timeout breve sul socket se possibile, o ci affidiamo al try/except
+                self.socket.settimeout(1.0) 
+                state, _ = self.recieve(needFrame=False)
+                self.socket.settimeout(None) # Rimuovi timeout
+                
+                if state is not None:
+                    if state.get('p1_hp', 0) > 0:
+                        print("Sync OK!")
+                        return state
+                    
+            except (ConnectionError, struct.error, socket.timeout):
+                # Se fallisce, aspetta un po' e riprova
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"Unexpected error during sync: {e}")
+                time.sleep(1)
+                
+        raise TimeoutError("Il gioco non ha risposto entro il tempo limite.")
 
     def connect(self):
         if self.socket is None:
@@ -193,7 +226,12 @@ class IkemenEnvironment:
         p2_x = state.get('p2_x', 0)
         p1_y = state.get('p1_y', 0)
         p2_y = state.get('p2_y', 0)
-
+        
+        current_tick = state.get('tick', 0)
+        MAX_ROUND_FRAMES = 5940.0
+        
+        
+        
         # Using normalized hp values to max values and distance between players
         state_vector = np.array([
             state.get('p1_hp', 0) / state.get('p1_life_max', 1000),
@@ -244,63 +282,18 @@ class IkemenEnvironment:
         if self.socket is None or not self.connected:
             return
         try:
-            chunk = self.socket.recv(0)
-            if not chunk:
-                return 
-        except ConnectionError as e:
+            self.send({'reset':True})
+            time.sleep(0.5)
+            self.socket.setblocking(0)
+            try:
+                while self.socket.recv(4096):
+                    pass
+            except BlockingIOError:
+                pass
+            self.socket.setblocking(1)
+            new_raw_state = self.wait_for_match_start()
+            self.previousState = new_raw_state
+            return new_raw_state, {}
+        except Exception as e:
             print(f"Connection Error: {e}")
-            return
-        self.send({'reset':True})
-        
-
-
-#-------------------------------|Test section|-------------------------------------------------
-
-parser = argparse.ArgumentParser(description="Ikemen Environment Test")
-parser.add_argument('--test', action = 'store_true', help='Run environment test')
-
-if __name__ == '__main__' and parser.parse_args().test:
-    env = IkemenEnvironment()
-    env.connect()
-    cnt = 0
-    while cnt < 10000:
-        try: 
-            json_size = struct.unpack('>I', env.recieveHelper(4))[0]
-            raw = json.loads(env.recieveHelper(json_size))
-            print(raw)
-            
-            state = raw['state']
-            
-            img_size = struct.unpack('>I', env.recieveHelper(4))[0]
-            print(f"IMG Size: {img_size}")
-            img = env.recieveHelper(img_size)
-            
-            w = raw["frame_w"]
-            h = raw["frame_h"]
-            print(f"W: {w}, H: {h}")
-            
-            rawImage = np.frombuffer(img, dtype=np.uint8)
-            
-            print(f"Image shape{rawImage.shape}")
-            
-            frame = rawImage.reshape((h, w, 4))
-            
-            nextMove = {
-            "p1_move": env.actionMapMove[1], 
-            "p1_btn": env.actionMapHit[0], 
-            "p2_move": env.actionMapMove[1], 
-            "p2_btn": env.actionMapHit[0], 
-            "reset": False
-            }
-
-            env.send(nextMove)
-            
-            cnt += 1
-            
-        except KeyboardInterrupt:
-            print("Manual interruption")
-            env.disconnect()
-            break
-    if env.connected:
-        env.disconnect()
-        print("Test over")
+            raise e

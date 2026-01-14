@@ -237,19 +237,16 @@ class TeacherModel(nn.Module):
                 # --- 2. PREPARAZIONE AZIONI ---
                 # Il modello restituisce tensori [MoveIdx, BtnIdx]. L'env vuole tuple (int, int).
                 # Convertiamo: Tensor GPU -> Numpy -> Lista -> Tupla
-                act_p1_tuple = tuple(a1.cpu().numpy().flatten().tolist()) # Es: (1, 0)
-                act_p2_tuple = tuple(a2.cpu().numpy().flatten().tolist()) 
+                act_p1 = tuple(a1.cpu().numpy().flatten().tolist()) # Es: (1, 0)
+                act_p2 = tuple(a2.cpu().numpy().flatten().tolist())
 
                 # --- 3. INTERAZIONE ENV (Manuale) ---
                 # A. Invia azioni
-                env.executeAction(act_p1_tuple, act_p2_tuple)
-                
-                # B. Ricevi nuovo stato grezzo
-                # Nota: needFrame=False perché il teacher usa solo vettori
                 try:
+                    env.executeAction(act_p1, act_p2)
                     raw_next_state, _ = env.recieve(needFrame=False)
-                except (ConnectionError, struct.error) as e:
-                    print(f"Errore ricezione dati: {e}. Interrompo rollout.")
+                except Exception as e:
+                    print(f"Errore invio azioni: {e}. Interrompo rollout.")
                     break
 
                 # C. Calcola Reward e Done
@@ -261,9 +258,9 @@ class TeacherModel(nn.Module):
                 next_obs_numpy = env.normalizeState(raw_next_state)
                 
                 # --- 4. SALVATAGGIO DATI ---
-                b_obs.append(obs_tensor)
-                b_actions.append(a1)
-                b_logprobs.append(logp1)
+                b_obs.append(obs_tensor.squeeze(0))
+                b_actions.append(a1.squeeze(0))
+                b_logprobs.append(logp1.squeeze(0))
                 b_values.append(v1.flatten())
                 b_rewards.append(torch.tensor(reward, dtype=torch.float32).to(self.device))
                 b_dones.append(torch.tensor(done, dtype=torch.float32).to(self.device))
@@ -273,16 +270,9 @@ class TeacherModel(nn.Module):
                     # Tracking
                     batch_matches += 1
                     if reward > 0: batch_wins += 1 # Assumendo reward positivo per vittoria
-                    
-                    # Reset dell'ambiente
-                    env.reset()
-                    
-                    # Dopo il reset, dobbiamo ricevere il nuovo stato iniziale pulito
                     try:
-                        raw_reset_state, _ = env.recieve(needFrame=False)
+                        raw_reset_state, _ = env.reset()
                         next_obs_numpy = env.normalizeState(raw_reset_state)
-                        # Resettiamo anche il previousState dell'env per evitare reward enormi al primo frame
-                        env.previousState = raw_reset_state 
                     except Exception as e:
                         print(f"Errore durante reset: {e}")
                         break
@@ -292,10 +282,14 @@ class TeacherModel(nn.Module):
 
                 # Aggiorniamo il tensore corrente per il prossimo step
                 obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device).unsqueeze(0)
-
+            
             # --- 6. BOOTSTRAPPING (Valore finale) ---
             _, _, _, next_value = self.get_action_and_value(obs_tensor)
             next_value = next_value.flatten()
+
+        if len(b_obs) == 0:
+            print("WARNING: No data collected in rollout. Skipping update.")
+            return None, None, 0.0
 
         # --- 7. IMPACCHETTAMENTO ---
         t_obs = torch.stack(b_obs)
@@ -372,9 +366,14 @@ class TeacherModel(nn.Module):
         try:
             env.launch_game()
             env.connect()
+            
+            raw_init = env.wait_for_match_start()
+            last_obs = env.normalizeState(raw_init)
+            env.previousState = raw_init # Inizializziamo per il reward
+            
             print("Environment connected successfully.")
-        except ConnectionError as e:
-            print(f"Critical Error: Could not connect to environment. {e}")
+        except Exception as e:
+            print(f"Critical Error: Could not connect to environment. {repr(e)}")
             env.close_game()
             return
 
@@ -387,18 +386,6 @@ class TeacherModel(nn.Module):
         opponent_model.eval()
         for param in opponent_model.parameters():
             param.requires_grad = False
-
-        # 3. PREPARAZIONE STATO INIZIALE
-        # Facciamo un reset e una prima lettura per avere 'last_obs' valido
-        env.reset()
-        try:
-            raw_init, _ = env.recieve(needFrame=False)
-            last_obs = env.normalizeState(raw_init)
-            env.previousState = raw_init # Inizializziamo per il reward
-        except Exception as e:
-            print(f"Error getting initial state: {e}")
-            env.close_game()
-            return
 
         # Variabili Loop
         total_updates = self.episodes
@@ -415,6 +402,19 @@ class TeacherModel(nn.Module):
                 self.rollout_steps, 
                 opponent_model
             )
+            
+            if batch_data is None:
+                print(f"Update {update}: Skipping update due to lack of data. Resyncing...")
+                try:
+                    raw_new = env.reset()
+                    if raw_new is None:
+                        raise RuntimeError("Reset did not return a valid state.")
+                    last_obs = env.normalizeState(raw_new)
+                    env.previousState = raw_new
+                except Exception as e:
+                    print(f"Critical Error during resync: {e}. Ending training.")
+                    break
+                continue
             
             # Aggiorniamo stato e contatori
             last_obs = next_obs

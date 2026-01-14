@@ -1,8 +1,15 @@
 To do list:
-- Verify that the sceduling logic of the send/recieve is actually reasonable, we may want to recieve the action first
-- Make a better protocol with reset (ack and confirmation), pause (+ folloup)
-- Try to automate the ikemen section of the code so that args can be decided at runtime
-- Revision of the controls protocol based in the network head shape
+- Rendi il codice portable (i.e. in alcune linee di codice l'eseguibile di gioco  
+e' inserito come indirizzo assoluto e non come indirizzo relativo, e non riesco a farlo  
+funzionare in altro modo. Se riesci a risolvere questo bug e' tanto)  
+- Verifica tramite **stable_baseline3** (SubprocVecEnv) la possibilita' di avere  
+piu' istanze di IKEMEN GO aperte *(servira' usare -port o altre impostazioni di IKEMEN*  
+*probabilmente)*  
+
+Next up:
+- MLP expansion e training del teacher MLP tramite self play PPO  
+- Eventualmente introdurre un RNN per rendere il modello piu' robusto  
+- impostazione e training vision student tramite self play PPO e distillation  
 
 
 ## State struct
