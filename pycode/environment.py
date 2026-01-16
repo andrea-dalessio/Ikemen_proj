@@ -60,7 +60,7 @@ class IkemenEnvironment:
         
         if training_mode == 'teacher':
             self.needFrame = False
-            self.observation_space = (12,)
+            self.observation_space = (13,)
         elif training_mode == 'student':
             self.needFrame = True
             self.observation_space = (CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number'])
@@ -108,20 +108,30 @@ class IkemenEnvironment:
         raise TimeoutError(f"[{self.instance}] Il gioco non ha risposto entro il tempo limite.")
 
     def connect(self):
-        if self.socket is None:
-            raise ConnectionError(f'[{self.instance}] No socket')
-        elif self.connected:
-            return
+        # 1. Kill all previous sockets
+        if self.socket is not None:
+            self.disconnect()
+
+        # 2. Errno 106 (Transport endpoint is already connected) workaround
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        
+        # Optional: Timeout to avoid infinite blocking in connect
+        self.socket.settimeout(5.0) 
+
         print(f"[{self.instance}] Opening on {self.host}:{self.port}")
         for i in range(self.max_retries):
             try:
                 self.socket.connect((self.host, self.port))
                 self.connected = True
+                self.socket.settimeout(None) # Remove timeout for normal operation
                 return
-            except ConnectionError as e:
+            except (ConnectionError, socket.timeout, OSError) as e:
                 print(f"[{self.instance}] Failed connection [{i+1}/{self.max_retries}]: {e}")
                 time.sleep(2)
-        raise ConnectionError(f"[{self.instance}] Failed connection")    
+        
+        # If all attempts fail, clean up
+        self.socket = None 
+        raise ConnectionError(f"[{self.instance}] Failed connection after retries")   
     
     # Here you launch the game!
     def launch_game(self):
@@ -129,23 +139,33 @@ class IkemenEnvironment:
         if not os.path.exists(game_path):
             raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
-        portNumber = str(self.port)
-        
-        launch_args = [game_path, '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
+        portNumber = str(self.port) # Adjust as needed  
+        launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
         print(f"[{self.instance}] Launching IkemenGO...")
         
         try:
             self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=self.log, stderr=self.log)
             print(f"[{self.instance}] Game launched, waiting for server...")
-            time.sleep(3)
+            time.sleep(1)
         except Exception as e:
             print(f"[{self.instance}] Failed to launch game: {e}")
             raise e
     
     def disconnect(self):
-        if not self.socket is None and self.connected:
-            self.socket.close()
+        if self.socket is not None:
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except (OSError, Exception):
+                pass
+            
+            try:
+                self.socket.close()
+            except (OSError, Exception):
+                pass
+
             self.socket = None
+        
+        self.connected = False
 
     def close_game(self):
         self.disconnect()
@@ -174,14 +194,24 @@ class IkemenEnvironment:
         return buf
     
     def send(self, data:dict):
+        if self.game_process is not None:
+            if self.game_process.poll() is not None:
+                self.connected = False
+                self.socket = None
+                raise ConnectionError(f"[{self.instance}] Game Process Died unexpectedy.")
+
         if self.socket is None:
             raise ConnectionError(f'[{self.instance}] No socket')
         elif not self.connected:
             raise ConnectionError(f'[{self.instance}] Not connected')
         
-        payload = json.dumps(data).encode('utf-8')
-        header = struct.pack('>I', len(payload))
-        self.socket.sendall(header + payload)
+        try:
+            payload = json.dumps(data).encode('utf-8')
+            header = struct.pack('>I', len(payload))
+            self.socket.sendall(header + payload)
+        except BrokenPipeError:
+            self.connected = False
+            raise ConnectionError(f"[{self.instance}] Broken Pipe during send (Server closed connection).")
     
 
     def rewardCompute(self, state):
@@ -233,7 +263,9 @@ class IkemenEnvironment:
         p2_y = state.get('p2_y', 0)
         
         current_tick = state.get('tick', 0)
-        MAX_ROUND_FRAMES = 5940.0
+        MAX_ROUND_FRAMES = 6000.0
+        time_remain_norm = (MAX_ROUND_FRAMES - current_tick) / MAX_ROUND_FRAMES
+        time_feat = np.clip(time_remain_norm, 0.0, 1.0)
         
         # Using normalized hp values to max values and distance between players
         state_vector = np.array([
@@ -248,10 +280,11 @@ class IkemenEnvironment:
             state.get('p1_power', 0) / 100.0,
             state.get('p2_power', 0) / 100.0,
             self.normalize_anim_smart(state.get('p1_anim_no', 0)),
-            self.normalize_anim_smart(state.get('p2_anim_no', 0))
+            self.normalize_anim_smart(state.get('p2_anim_no', 0)),
+            time_feat
             ], 
             dtype=np.float32
-        ) # TODO : Add timer
+        )
         
         return state_vector
         
@@ -302,9 +335,34 @@ class IkemenEnvironment:
         except Exception as e:
             print(f"[{self.instance}] Connection Error: {e}")
             raise e
+
     def start(self):
         self.launch_game()
         try:
             self.connect()
         except ConnectionError as ex:
             print(f"[{self.instance}] Could not connect: {ex}")
+            
+    # Adding a sync protocol...
+    def sync_step(self):
+        if self.socket is None:
+            return None
+
+        try:
+            # Ping server with a no-op action
+            self.executeAction((0, 0), (0, 0))
+            
+            # Quick listen (0.05s timeout)
+            self.socket.settimeout(0.05) 
+            state, frame = self.recieve()
+            self.socket.settimeout(None) # Restore blocking
+            
+            if state is not None and state.get('p1_hp', 0) > 0:
+                return state, frame
+                
+        except (ConnectionError, struct.error, socket.timeout):
+            pass
+        except Exception as e:
+            print(f"[{self.instance}] Sync step error: {e}")
+            
+        return None

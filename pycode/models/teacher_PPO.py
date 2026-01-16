@@ -2,13 +2,23 @@ from pathlib import Path
 from collections import deque
 import numpy as np
 import os
-
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
+
+class ResidualBlock(nn.Module):
+    def __init__(self, size):
+        super().__init__()
+        self.fc = nn.Linear(size, size)
+        self.ln = nn.LayerNorm(size)
+    
+    def forward(self, x):
+        # Skip connection: f(x) + x
+        return F.relu(self.ln(self.fc(x))) + x
 
 class TeacherModel(nn.Module):
     def __init__(self, env, configs):
@@ -46,23 +56,31 @@ class TeacherModel(nn.Module):
         else:
             self.env_number = 1 
         
-        # Not using the predefined model in stateNetwork.py. Creating a new model here (and then modify the module later on)
-        self.featureExtractor = nn.Sequential(
-            nn.Linear(self.state_dim, 256),
-            nn.Tanh(),
-            nn.Linear(256, 128),
-            nn.Tanh()
-        )
+        # Now using an LSTM
+        self.input_layer = nn.Linear(self.state_dim, 512)
         
-        self.movePolicy = nn.Linear(128, self.actionsMove)
-        self.hitPolicy = nn.Linear(128, self.actionsHit)
-        self.valueEstimator = nn.Linear(128, 1)
+        # Residual Blocks
+        self.res_block1 = ResidualBlock(512)
+        self.res_block2 = ResidualBlock(512)
+        self.res_block3 = ResidualBlock(512)
+        
+        self.feature_head = nn.Linear(512, 256)
+        
+        # Policy Heads (actor-critic)
+        self.movePolicy = nn.Linear(256, self.actionsMove)
+        self.hitPolicy = nn.Linear(256, self.actionsHit)
+        self.valueEstimator = nn.Linear(256, 1)
+               
         self.to(self.device)
         
         
     def make_copy(self):
         model = TeacherModel(self.env, self.configs)
-        model.featureExtractor.load_state_dict(self.featureExtractor.state_dict())
+        model.input_layer.load_state_dict(self.input_layer.state_dict())
+        model.res_block1.load_state_dict(self.res_block1.state_dict())
+        model.res_block2.load_state_dict(self.res_block2.state_dict())
+        model.res_block3.load_state_dict(self.res_block3.state_dict())
+        model.feature_head.load_state_dict(self.feature_head.state_dict())
         model.hitPolicy.load_state_dict(self.hitPolicy.state_dict())
         model.movePolicy.load_state_dict(self.movePolicy.state_dict())
         return model
@@ -89,56 +107,58 @@ class TeacherModel(nn.Module):
         returns = advantages + values
         return advantages, returns
 
-    def ppo_update(self, model, optimizer, batch_data):
+    def ppo_update(self, model, optimizer, batch_data, last_obs):
         """Esegue l'aggiornamento dei pesi della rete."""
         # Scompattiamo i dati del buffer
         b_obs, b_actions, b_logprobs, b_returns, b_advantages, b_values = batch_data
 
         current_batch_size = b_obs.shape[0]
         
-        # Ciclo di epoche (Solitamente 4 o 10)
+        last_ping_time = time.time()
+        ping_interval = 2.0  # seconds
+        
+        # Ciclo di epoche
         for epoch in range(self.update_epochs):
-            # Generiamo indici casuali per i mini-batch
             indices = np.random.permutation(current_batch_size)
             
             for start in range(0, current_batch_size, self.minibatch_size):
                 end = start + self.minibatch_size
                 mb_idxs = indices[start:end]
 
-                # 1. Forward pass sui dati salvati (Ricalcoliamo logprob e values attuali)
-                # Nota: model.get_action_and_value deve restituire (logits, value)
+                # --- CODICE PPO STANDARD ---
                 _, new_logprobs, entropy, new_values = model.get_action_and_value(b_obs[mb_idxs], b_actions[mb_idxs])
-                
-                # 2. Calcolo Ratio (Probabilità Nuova / Probabilità Vecchia)
                 logratio = new_logprobs - b_logprobs[mb_idxs]
                 ratio = logratio.exp()
-
-                # 3. Calcolo PPO Loss (Clipped)
                 mb_advantages = b_advantages[mb_idxs]
-                # Normalizzazione vantaggi (stabilizza il training)
                 if mb_advantages.std() > 1e-8:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
-
-                # 4. Value Loss (MSE tra valore predetto e rendimento reale)
-                # Spesso si usa anche il clipping sulla value function, qui metto la versione base
                 value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
-
-                # 5. Totale
                 loss = policy_loss - (self.entropy_coef * entropy.mean()) + (self.value_loss_coef * value_loss)
 
-                # 6. Backpropagation
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
                 optimizer.step()
+                # ---------------------------
+
+                # --- KEEP ALIVE CHECK ---
+                # Se è passato troppo tempo dall'ultimo contatto con il gioco
+                if time.time() - last_ping_time > ping_interval:
+                    last_obs = self.keep_alive(last_obs)
+                    last_ping_time = time.time()
+        
+        return last_obs # Return updated last_obs after keep-alive
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
-        hidden = self.featureExtractor(x)
+        x = F.relu(self.input_layer(x))
+        x = self.res_block1(x)
+        x = self.res_block2(x)
+        x = self.res_block3(x)
+        hidden = F.relu(self.feature_head(x))
         
         # 1. Calcolo Logits per le due teste
         logits_move = self.movePolicy(hidden)
@@ -191,8 +211,13 @@ class TeacherModel(nn.Module):
     def act(self, state, mode='exploit'):
         networkInput = state
         with torch.no_grad():
-            logits_move = self.movePolicy(networkInput)
-            logits_attack = self.hitPolicy(networkInput)
+            x = F.relu(self.input_layer(networkInput))
+            x = self.res_block1(x)
+            x = self.res_block2(x)
+            x = self.res_block3(x)
+            hidden = F.relu(self.feature_head(x))
+            logits_move = self.movePolicy(hidden)
+            logits_attack = self.hitPolicy(hidden)
         if mode == 'explore':
             dist_move = torch.distributions.Categorical(logits=logits_move)
             dist_attack = torch.distributions.Categorical(logits=logits_attack)
@@ -216,6 +241,8 @@ class TeacherModel(nn.Module):
         batch_wins = 0
         batch_matches = 0
 
+        crash_occurred = False
+        
         # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
         obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device)
         if self.env_number == 1:
@@ -246,6 +273,7 @@ class TeacherModel(nn.Module):
                     raw_next_state, _ = self.env.recieve()
                 except Exception as e:
                     print(f"Errore invio azioni: {e}. Interrompo rollout.")
+                    crash_occurred = True
                     break
 
                 # C. Calcola Reward e Done
@@ -291,9 +319,9 @@ class TeacherModel(nn.Module):
             _, _, _, next_value = self.get_action_and_value(obs_tensor)
             next_value = next_value.flatten()
 
-        if len(b_obs) == 0:
+        if crash_occurred or len(b_obs) == 0:
             print("WARNING: No data collected in rollout. Skipping update.")
-            return None, None, 0.0
+            return None, None, 0.0, True
 
         # --- 7. IMPACCHETTAMENTO ---
         t_obs = torch.stack(b_obs)
@@ -317,11 +345,39 @@ class TeacherModel(nn.Module):
 
         batch_data = (flat_obs, flat_actions, flat_logprobs, flat_returns, flat_advantages, flat_values)
         
-        # Calcolo Win Rate
+        # Calculate Win Rate
         win_rate = batch_wins / batch_matches if batch_matches > 0 else 0.0
         
-        # Restituiamo next_obs (in formato numpy) per mantenere la continuità nel loop principale
-        return batch_data, next_obs_numpy, win_rate
+        # Return next_obs (in numpy format) to maintain continuity in the main loop
+        return batch_data, next_obs_numpy, win_rate, False
+    
+    def keep_alive(self, current_obs):
+        """
+        Needed to keep the connection alive with the Ikemen env while the training runs!
+        """
+        # Generating no-op actions to keep servers alive
+        n_envs = self.env_number
+        dummy_action = np.zeros((n_envs, 2), dtype=int) 
+        
+        try:
+            self.env.executeAction(dummy_action, dummy_action)
+            
+            raw_next_states, _ = self.env.recieve()
+            
+            # Get new state to compute update
+            if self.env.count > 1:
+                # Case SuperEnvironment
+                self.env.envs[0].previousState = raw_next_states[0]
+                # Note: SuperEnv handles previousState for all envs internally.
+            else:
+                self.env.previousState = raw_next_states
+                
+
+            return self.env.normalizeState(raw_next_states)
+            
+        except Exception as e:
+            print(f"Warning: Keep-alive failed: {e}")
+            return current_obs    
 
     def flip_observation(self, obs):
         """ Flips observation for opponent's perspective """
@@ -362,6 +418,9 @@ class TeacherModel(nn.Module):
         # Y distance flip: Se P2 è sopra (+), per P2 P1 è sotto (-)
         flipped[..., 3] = -obs[..., 3]
 
+        # Time (13th extra dimension) remains unchanged but still copy it
+        flipped[..., 12] = obs[..., 12]
+        
         return flipped    
     
     def trainPPO(self):
@@ -402,20 +461,19 @@ class TeacherModel(nn.Module):
         for update in range(1, total_updates + 1):
             
             # A. RACCOLTA DATI
-            batch_data, next_obs, win_rate = self.runEpisode(
+            batch_data, next_obs, win_rate, crash_occurred = self.runEpisode(
                 last_obs, 
                 self.rollout_steps, 
                 opponent_model
             )
             
-            if batch_data is None:
-                print(f"Update {update}: Skipping update due to lack of data. Resyncing...")
+            if crash_occurred or batch_data is None:
+                print(f"Update {update}: Skipping update due to crash (crash_occurred={crash_occurred}) or lack of data. Resyncing...")
                 try:
-                    raw_new, _ = self.env.reset()
-                    if raw_new is None:
-                        raise RuntimeError("Reset did not return a valid state.")
+                    raw_new, _ = self.env.hard_restart()
                     last_obs = self.env.normalizeState(raw_new)
                     self.env.previousState = raw_new
+                    print("Resync successful. Continuing training.")
                 except Exception as e:
                     print(f"Critical Error during resync: {e}. Ending training.")
                     break
@@ -430,7 +488,7 @@ class TeacherModel(nn.Module):
             avg_win_rate = sum(win_rate_history) / len(win_rate_history) if len(win_rate_history) > 0 else 0.0
             
             # B. UPDATE PPO (LEARNER)
-            self.ppo_update(self, optimizer, batch_data)
+            last_obs = self.ppo_update(self, optimizer, batch_data, last_obs)
             
             # C. LOGGING
             avg_return = batch_data[3].mean().item()

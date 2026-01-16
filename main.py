@@ -17,7 +17,7 @@ if 'logs' not in dirList:
 else:
     print("Log dirctory OK")
 if 'models_saves' not in dirList:
-    os.mkdir(f"{os.getcwd()}/'models_saves")
+    os.mkdir(f"{os.getcwd()}/models_saves")
     print("Saves directory created")
 else:
     print("Saves dirctory OK")

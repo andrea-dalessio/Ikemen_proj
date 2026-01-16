@@ -1,3 +1,4 @@
+import time
 from .environment import IkemenEnvironment
 import numpy as np
 from pathlib import Path
@@ -35,8 +36,13 @@ class SuperEnvironment:
         return self.envs[0].action_space
     
     def start(self):
+        print(f"Launching and connecting to {self.count} environments...")
         for e in self.envs:
             e.launch_game()
+            time.sleep(2)
+            
+        print("Game initialization...")
+        for e in self.envs:
             try:
                 e.connect()
             except ConnectionError as ex:
@@ -50,13 +56,36 @@ class SuperEnvironment:
         for e in self.envs:
             e.connect()
             
-    def wait_for_match_start(self, timeout=30):
-        states = []
-        frames = []
-        for e in self.envs:
-            state, frame = e.wait_for_match_start(timeout=timeout)
-            states.append(state)
-            frames.append(frame)
+    def wait_for_match_start(self, timeout=60):
+        print("Parallel handshaking with environments...")
+        start_time = time.time()
+        results = [None] * self.count # Results from games
+        synced_mask = [False] * self.count # Is the round over?
+        
+        while not all(synced_mask):
+            if time.time() - start_time > timeout:
+                raise TimeoutError("Global sync timed out.")
+
+            for i, env in enumerate(self.envs):
+                if synced_mask[i]:
+                    continue
+                
+                # Single sync attempt
+                res = env.sync_step()
+                
+                if res is not None:
+                    results[i] = res
+                    synced_mask[i] = True
+                    print(f"[{i}] Synced!")
+            
+            # Small sleep to avoid maxing out the CPU in the while loop
+            if not all(synced_mask):
+                time.sleep(0.1)
+
+        # Unpacking results
+        states = [r[0] for r in results]
+        frames = [r[1] for r in results]
+        
         return states, np.array(frames)
     
     def disconnect(self):
@@ -107,6 +136,13 @@ class SuperEnvironment:
                 raise IndexError(f"Index out of order {index}(>={self.count})")
             state, frame = self.envs[index].reset()
             return state, np.array(frame)
+        
+    def hard_restart(self):
+        print("!!! HARD RESTART TRIGGERED !!!")
+        self.close_game()
+        time.sleep(2) # Pulizia risorse OS
+        self.start() # Rilancia e riconnette
+        return self.wait_for_match_start()
     
     def normalizeState(self, state, index:int|None=None):
         if index is None:
@@ -114,6 +150,7 @@ class SuperEnvironment:
             for i in range(self.count):
                 statesNormalized = self.envs[i].normalizeState(state[i])
                 statesVector.append(statesNormalized)
+            return np.array(statesVector)
         else:
-            statesNormalized = self.envs[index].normalizeState(state)    
-        return np.array(statesVector)
+            statesNormalized = self.envs[index].normalizeState(state)
+            return np.array(statesNormalized)
