@@ -57,7 +57,7 @@ class SuperEnvironment:
             state, frame = e.wait_for_match_start(timeout=timeout)
             states.append(state)
             frames.append(frame)
-        return np.array(states), np.array(frames)
+        return states, np.array(frames)
     
     def disconnect(self):
         for e in self.envs:
@@ -81,7 +81,6 @@ class SuperEnvironment:
             if self.needFrame:
                 frames.append(tmpFrme)
 
-        nextStates = np.array(nextStates)
         frames = np.array(frames)
         return nextStates, frames
     
@@ -96,20 +95,25 @@ class SuperEnvironment:
     
     def reset(self, index:int|None=None):
         if index is None:
-            initStates = []
+            frames = []
+            states = []
             for e in self.envs:
-                state, _ = e.reset()
-                initStates.append(state)
-            return np.array(initStates)
+                state, frame = e.reset()
+                states.append(state)
+                frames.append(frame)
+            return states, np.array(frames)
         else:
             if index >= self.count:
                 raise IndexError(f"Index out of order {index}(>={self.count})")
             state, frame = self.envs[index].reset()
-            return np.array(state), np.array(frame)
+            return state, np.array(frame)
     
-    def normalizeState(self, state):
-        statesVector = []
-        for i in range(self.count):
-            statesNormalized = self.envs[i].normalizeState(state[i])
-            statesVector.append(statesNormalized)
+    def normalizeState(self, state, index:int|None=None):
+        if index is None:
+            statesVector = []
+            for i in range(self.count):
+                statesNormalized = self.envs[i].normalizeState(state[i])
+                statesVector.append(statesNormalized)
+        else:
+            statesNormalized = self.envs[index].normalizeState(state)    
         return np.array(statesVector)

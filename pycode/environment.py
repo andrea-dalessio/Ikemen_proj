@@ -9,16 +9,13 @@ import numpy as np
 from pathlib import Path
 from gymnasium import spaces
 
-configsPath = Path(__file__).resolve().parent / 'configs.yaml'
+parentPath = Path(__file__).resolve().parent
+configsPath = parentPath / 'configs.yaml'
 
 
 with open(configsPath, 'r') as configsFile:
     CONFIGS = yaml.safe_load(configsFile)
 
-class IkemenEnvironment:
-    host = CONFIGS['env']['host']
-    port = CONFIGS['env']['port']
-    
     # actionStruct = {
     #     "p1_move": move, 
     #     "p1_btn": btn, 
@@ -27,14 +24,16 @@ class IkemenEnvironment:
     #     "reset": False
     # }
 
-    # Defining the action and observation spaces
-    
-    def __init__(self, training_mode:str):
+class IkemenEnvironment:
+    host = CONFIGS['env']['host']
+    def __init__(self, training_mode:str, port:int, instance:int=0):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.max_retries = CONFIGS['env']['max_retries']
         self.connected = False
         self.previousState = None
-        
+        self.port = port
+        self.log = open(f"{os.getcwd()}/logs/log_{self.port}.txt", 'w')
+        self.instance = instance
         self.actionMapHit = {
             0: "-",
             1: "a",
@@ -57,14 +56,16 @@ class IkemenEnvironment:
             8: "DB"
         }        
         
-        self.action_space = spaces.MultiDiscrete([len(self.actionMapMove), len(self.actionMapHit)])
+        self.action_space = (len(self.actionMapMove), len(self.actionMapHit))
         
         if training_mode == 'teacher':
-            self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(12,), dtype=np.float32)
+            self.needFrame = False
+            self.observation_space = (12,)
         elif training_mode == 'student':
-            self.observation_space = spaces.Box(low=0, high=255, shape=(CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number']), dtype=np.uint8)
+            self.needFrame = True
+            self.observation_space = (CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number'])
         else:
-            raise ValueError("Invalid training mode. Choose 'teacher' or 'student'.")
+            raise ValueError(f"[{self.instance}] Invalid training mode. Choose 'teacher' or 'student'.")
         
         # Here's the subprocess constructor :)
         self.game_process = None
@@ -73,8 +74,11 @@ class IkemenEnvironment:
         """
         Handshake protocol
         """
-        print("Syncing with game...")
+        print(f"[{self.instance}] Syncing with game...")
         start_time = time.time()
+        
+        if self.socket is None:
+            raise Exception(f"[{self.instance}] Socket missing")
         
         while time.time() - start_time < timeout:
             try:
@@ -86,55 +90,56 @@ class IkemenEnvironment:
                 # 2. Prova a leggere lo stato
                 # Usiamo un timeout breve sul socket se possibile, o ci affidiamo al try/except
                 self.socket.settimeout(1.0) 
-                state, _ = self.recieve(needFrame=False)
+                state, frame = self.recieve()
                 self.socket.settimeout(None) # Rimuovi timeout
                 
                 if state is not None:
                     if state.get('p1_hp', 0) > 0:
-                        print("Sync OK!")
-                        return state
+                        print(f"[{self.instance}] Sync OK!")
+                        return state, frame
                     
             except (ConnectionError, struct.error, socket.timeout):
                 # Se fallisce, aspetta un po' e riprova
                 time.sleep(0.5)
             except Exception as e:
-                print(f"Unexpected error during sync: {e}")
+                print(f"[{self.instance}] Unexpected error during sync: {e}")
                 time.sleep(1)
                 
-        raise TimeoutError("Il gioco non ha risposto entro il tempo limite.")
+        raise TimeoutError(f"[{self.instance}] Il gioco non ha risposto entro il tempo limite.")
 
     def connect(self):
         if self.socket is None:
-            raise ConnectionError('No socket')
+            raise ConnectionError(f'[{self.instance}] No socket')
         elif self.connected:
             return
-        
+        print(f"[{self.instance}] Opening on {self.host}:{self.port}")
         for i in range(self.max_retries):
             try:
                 self.socket.connect((self.host, self.port))
                 self.connected = True
                 return
             except ConnectionError as e:
-                print(f"Failed connection [{i+1}/{self.max_retries}]: {e}")
+                print(f"[{self.instance}] Failed connection [{i+1}/{self.max_retries}]: {e}")
                 time.sleep(2)
-        raise ConnectionError("Failed connection")    
+        raise ConnectionError(f"[{self.instance}] Failed connection")    
     
     # Here you launch the game!
     def launch_game(self):
-        game_path = CONFIGS['env']['game_path']
+        game_path = parentPath.parent / "game/Ikemen_GO_Linux"
         if not os.path.exists(game_path):
-            raise FileNotFoundError(f"Game executable not found at {game_path}")
+            raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
-        launch_args = [game_path, '-p1', 'kfm', '-p2', 'kfm', '-ai', '0']
+        portNumber = str(self.port)
         
-        print(f"Launching Ikemen GO from {game_path}...")
+        launch_args = [game_path, '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
+        print(f"[{self.instance}] Launching IkemenGO...")
         
         try:
-            self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            print("Game launched, waiting for server...")
+            self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=self.log, stderr=self.log)
+            print(f"[{self.instance}] Game launched, waiting for server...")
             time.sleep(3)
         except Exception as e:
-            print(f"Failed to launch game: {e}")
+            print(f"[{self.instance}] Failed to launch game: {e}")
             raise e
     
     def disconnect(self):
@@ -145,20 +150,20 @@ class IkemenEnvironment:
     def close_game(self):
         self.disconnect()
         if self.game_process is not None:
-            print("Closing Ikemen GO...")
+            print(f"[{self.instance}] Closing Ikemen GO...")
             self.game_process.terminate()
             try:
                 self.game_process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self.game_process.kill()
-                print("Game process killed because it crashed.")
+                print(f"[{self.instance}] Game process killed because it crashed.")
             self.game_process = None
     
     def recieveHelper(self, n:int):
         if self.socket is None:
-            raise ConnectionError('No socket')
+            raise ConnectionError(f'[{self.instance}] No socket')
         elif not self.connected:
-            raise ConnectionError('Not connected')
+            raise ConnectionError(f'[{self.instance}] Not connected')
         
         buf = b''
         while len(buf) < n:
@@ -170,9 +175,9 @@ class IkemenEnvironment:
     
     def send(self, data:dict):
         if self.socket is None:
-            raise ConnectionError('No socket')
+            raise ConnectionError(f'[{self.instance}] No socket')
         elif not self.connected:
-            raise ConnectionError('Not connected')
+            raise ConnectionError(f'[{self.instance}] Not connected')
         
         payload = json.dumps(data).encode('utf-8')
         header = struct.pack('>I', len(payload))
@@ -230,8 +235,6 @@ class IkemenEnvironment:
         current_tick = state.get('tick', 0)
         MAX_ROUND_FRAMES = 5940.0
         
-        
-        
         # Using normalized hp values to max values and distance between players
         state_vector = np.array([
             state.get('p1_hp', 0) / state.get('p1_life_max', 1000),
@@ -246,12 +249,14 @@ class IkemenEnvironment:
             state.get('p2_power', 0) / 100.0,
             self.normalize_anim_smart(state.get('p1_anim_no', 0)),
             self.normalize_anim_smart(state.get('p2_anim_no', 0))
-        ], dtype=np.float32) # TODO : Add timer
+            ], 
+            dtype=np.float32
+        ) # TODO : Add timer
         
         return state_vector
         
     
-    def recieve(self, needFrame:bool=False): # Editing module to return frame only if needed. Also correcting bugs and restructuring state vector
+    def recieve(self): # Editing module to return frame only if needed. Also correcting bugs and restructuring state vector
         json_size = struct.unpack('>I', self.recieveHelper(4))[0]
         raw = json.loads(self.recieveHelper(json_size))
         
@@ -261,7 +266,7 @@ class IkemenEnvironment:
         img = self.recieveHelper(img_size)
         
         frame = None
-        if needFrame:
+        if self.needFrame:
             w = raw["frame_w"]
             h = raw["frame_h"]
             frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
@@ -280,20 +285,26 @@ class IkemenEnvironment:
 
     def reset(self):
         if self.socket is None or not self.connected:
-            return
+            raise ConnectionError(f"[{self.instance}] Tried resetting while there is no socket")
         try:
             self.send({'reset':True})
             time.sleep(0.5)
-            self.socket.setblocking(0)
+            self.socket.setblocking(False)
             try:
                 while self.socket.recv(4096):
                     pass
             except BlockingIOError:
                 pass
-            self.socket.setblocking(1)
-            new_raw_state = self.wait_for_match_start()
+            self.socket.setblocking(True)
+            new_raw_state, new_frame = self.wait_for_match_start()
             self.previousState = new_raw_state
-            return new_raw_state, {}
+            return new_raw_state, new_frame
         except Exception as e:
-            print(f"Connection Error: {e}")
+            print(f"[{self.instance}] Connection Error: {e}")
             raise e
+    def start(self):
+        self.launch_game()
+        try:
+            self.connect()
+        except ConnectionError as ex:
+            print(f"[{self.instance}] Could not connect: {ex}")

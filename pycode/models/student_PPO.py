@@ -10,11 +10,7 @@ def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
 class StudentModel(nn.Module):
-    def __init__(self,
-                env,
-                configs:dict, 
-                device='cpu'
-            ):
+    def __init__(self, env, configs:dict):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')

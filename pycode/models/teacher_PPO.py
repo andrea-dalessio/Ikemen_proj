@@ -1,31 +1,17 @@
+from pathlib import Path
+from collections import deque
+import numpy as np
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import yaml
-from pathlib import Path
-import json
-import sys
-import copy
-from collections import deque
-import struct
-
-# Include parent folder to get env
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-#Include now env
-from pycode.environment import IkemenEnvironment
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
-configsPath = Path(__file__).resolve().parent.parent / 'configs.yaml'
-
-with open(configsPath, 'r') as configsFile:
-    CONFIGS = yaml.safe_load(configsFile)
-
 class TeacherModel(nn.Module):
-    def __init__(self, env, configs=CONFIGS, device='cpu'):
+    def __init__(self, env, configs):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')
@@ -36,27 +22,33 @@ class TeacherModel(nn.Module):
             print(f"Using device: cpu")
         
         self.configs = configs
+        self.saveName = f'{os.getcwd()}/models_saves/teacher_model.pt'
         
-        self.gamma = configs['stdPPO']['gamma']
-        self.gae_lambda = configs['stdPPO']['gae_lambda']
-        self.episodes = 100
-        self.lr = configs['stdPPO']['lr']
-        self.clip_epsilon = configs['stdPPO']['clip_epsilon']
-        self.entropy_coef = configs['stdPPO']['entropy_coef']
-        self.value_loss_coef = configs['stdPPO']['value_loss_coef']
-        self.max_grad_norm = configs['stdPPO']['max_grad_norm']
-        self.update_epochs = configs['TeachTrain']['update_epochs']
-        self.batch_size = configs['TeachTrain']['batch_size']
-        self.minibatch_size = configs['TeachTrain']['minibatch_size']
-        self.rollout_steps = configs['TeachTrain']['rollout_steps']
+        self.gamma = configs['general']['gamma']
+        self.gae_lambda = configs['general']['gae_lambda']
+        self.episodes = configs['teacherModel']['episodes']
+        self.lr = configs['general']['lr']
+        self.clip_epsilon = configs['general']['clip_epsilon']
+        self.entropy_coef = configs['general']['entropy_coef']
+        self.value_loss_coef = configs['general']['value_loss_coef']
+        self.max_grad_norm = configs['general']['max_grad_norm']
+        self.update_epochs = configs['teacherModel']['update_epochs']
+        self.batch_size = configs['teacherModel']['batch_size']
+        self.minibatch_size = configs['teacherModel']['minibatch_size']
+        self.rollout_steps = configs['teacherModel']['rollout_steps']
         
-        state_dim = env.observation_space.shape[0]
-        self.actionsMove = env.action_space.nvec[0]
-        self.actionsHit = env.action_space.nvec[1]
+        self.state_dim = env.observation_space[0]
+        self.actionsMove = env.action_space[0]
+        self.actionsHit = env.action_space[1]
+        self.env = env
+        if self.env.count is not None:
+            self.env_number = self.env.count
+        else:
+            self.env_number = 1 
         
         # Not using the predefined model in stateNetwork.py. Creating a new model here (and then modify the module later on)
         self.featureExtractor = nn.Sequential(
-            nn.Linear(state_dim, 256),
+            nn.Linear(self.state_dim, 256),
             nn.Tanh(),
             nn.Linear(256, 128),
             nn.Tanh()
@@ -67,25 +59,33 @@ class TeacherModel(nn.Module):
         self.valueEstimator = nn.Linear(128, 1)
         self.to(self.device)
         
-    # Changing momentarily any additional functions. Recover them in previous commits if needed.
-    
-    def compute_gae(self, rewards, values, dones, next_value):
-        """Calcola i vantaggi usando GAE (Generalized Advantage Estimation)."""
-        advantages = torch.zeros_like(rewards)
-        lastgaelam = 0
         
-        # Si itera all'indietro
-        for t in reversed(range(len(rewards))):
-            if t == len(rewards) - 1:
-                nextnonterminal = 1.0 - dones[t] # Se done=1, next è 0
+    def make_copy(self):
+        model = TeacherModel(self.env, self.configs)
+        model.featureExtractor.load_state_dict(self.featureExtractor.state_dict())
+        model.hitPolicy.load_state_dict(self.hitPolicy.state_dict())
+        model.movePolicy.load_state_dict(self.movePolicy.state_dict())
+        return model
+    
+    # Changing momentarily any additional functions. Recover them in previous commits if needed.
+    def compute_gae(self, rewards, values, dones, next_value):
+        T, N = rewards.shape
+        advantages = torch.zeros_like(rewards)
+        lastgaelam = torch.zeros(N, device=self.device)
+
+        # iterate backwards in time
+        for t in reversed(range(T)):
+            if t == T - 1:
+                nextnonterminal = 1.0 - dones[t]
                 nextvalues = next_value
             else:
-                nextnonterminal = 1.0 - dones[t+1]
-                nextvalues = values[t+1]
-                
+                nextnonterminal = 1.0 - dones[t + 1]
+                nextvalues = values[t + 1]
+
             delta = rewards[t] + self.gamma * nextvalues * nextnonterminal - values[t]
-            advantages[t] = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
-            
+            lastgaelam = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
+            advantages[t] = lastgaelam
+
         returns = advantages + values
         return advantages, returns
 
@@ -178,10 +178,10 @@ class TeacherModel(nn.Module):
                 index += n
 
     def save(self):
-        torch.save(self.state_dict(), 'teacher_model.pt')
+        torch.save(self.state_dict(), self.saveName)
 
     def load(self):
-        self.load_state_dict(torch.load('teacher_model.pt', map_location=self.device))
+        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
 
     def to(self, device):
         ret = super().to(device)
@@ -207,7 +207,7 @@ class TeacherModel(nn.Module):
         return action.item()
 
     # TODO : Clean accordingly...
-    def runEpisode(self, env, last_obs, rollout_steps, opponent_model):
+    def runEpisode(self, last_obs, rollout_steps, opponent_model):
         """
         Raccoglie dati simulando un loop 'step' manuale poiché l'env non ne ha uno unificato.
         """
@@ -217,15 +217,16 @@ class TeacherModel(nn.Module):
         batch_matches = 0
 
         # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
-        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device).unsqueeze(0)
+        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device)
+        if self.env_number == 1:
+            obs_tensor = obs_tensor.unsqueeze(0)
 
         # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
-        if env.previousState is None:
-             # Hack: se non c'è previousState, usiamo quello che abbiamo appena normalizzato (non perfetto ma evita crash)
-             pass 
+        if self.env.previousState is None:
+            self.env.previousState = last_obs.copy()
 
         with torch.no_grad():
-            for step in range(rollout_steps):
+            for _ in range(rollout_steps):
                 # --- 1. POLICY INFERENZA ---
                 # Player 1 (Teacher)
                 a1, logp1, _, v1 = self.get_action_and_value(obs_tensor)
@@ -235,16 +236,14 @@ class TeacherModel(nn.Module):
                 a2, _, _, _ = opponent_model.get_action_and_value(opp_obs_tensor)
                 
                 # --- 2. PREPARAZIONE AZIONI ---
-                # Il modello restituisce tensori [MoveIdx, BtnIdx]. L'env vuole tuple (int, int).
-                # Convertiamo: Tensor GPU -> Numpy -> Lista -> Tupla
-                act_p1 = tuple(a1.cpu().numpy().flatten().tolist()) # Es: (1, 0)
-                act_p2 = tuple(a2.cpu().numpy().flatten().tolist())
+                act_p1 = a1.cpu().numpy()
+                act_p2 = a2.cpu().numpy()
 
                 # --- 3. INTERAZIONE ENV (Manuale) ---
                 # A. Invia azioni
                 try:
-                    env.executeAction(act_p1, act_p2)
-                    raw_next_state, _ = env.recieve(needFrame=False)
+                    self.env.executeAction(act_p1, act_p2)
+                    raw_next_state, _ = self.env.recieve()
                 except Exception as e:
                     print(f"Errore invio azioni: {e}. Interrompo rollout.")
                     break
@@ -252,36 +251,41 @@ class TeacherModel(nn.Module):
                 # C. Calcola Reward e Done
                 # Nota: rewardCompute usa env.previousState. Dobbiamo assicurarci che sia settato.
                 # Se env.recieve non aggiorna env.previousState, lo facciamo noi alla fine del ciclo.
-                reward, done = env.rewardCompute(raw_next_state)
-                
-                # D. Normalizza il nuovo stato per la rete neurale
-                next_obs_numpy = env.normalizeState(raw_next_state)
+                rewards, dones = self.env.rewardCompute(raw_next_state)
+                rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+                dones = torch.tensor(dones, dtype=torch.float32, device=self.device)      
                 
                 # --- 4. SALVATAGGIO DATI ---
-                b_obs.append(obs_tensor.squeeze(0))
-                b_actions.append(a1.squeeze(0))
-                b_logprobs.append(logp1.squeeze(0))
-                b_values.append(v1.flatten())
-                b_rewards.append(torch.tensor(reward, dtype=torch.float32).to(self.device))
-                b_dones.append(torch.tensor(done, dtype=torch.float32).to(self.device))
+                b_obs.append(obs_tensor)
+                b_actions.append(a1)
+                b_logprobs.append(logp1)
+                b_values.append(v1.squeeze(-1))
+                b_rewards.append(rewards.float())
+                b_dones.append(dones.float())
+                
+                
+                next_obs_numpy = self.env.normalizeState(raw_next_state)
+                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device)
                 
                 # --- 5. GESTIONE FINE EPISODIO (RESET) ---
-                if done:
-                    # Tracking
-                    batch_matches += 1
-                    if reward > 0: batch_wins += 1 # Assumendo reward positivo per vittoria
-                    try:
-                        raw_reset_state, _ = env.reset()
-                        next_obs_numpy = env.normalizeState(raw_reset_state)
-                    except Exception as e:
-                        print(f"Errore durante reset: {e}")
-                        break
-                else:
-                    # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
-                    env.previousState = raw_next_state
+                for i, done in enumerate(dones):
+                    if done:
+                        batch_matches += 1
+                        if rewards[i] > 0: 
+                            batch_wins += 1 # Assumendo reward positivo per vittoria
+                        try:
+                            raw_reset_state, _ = self.env.reset(i)
+                        except Exception as e:
+                            print(f"Errore durante reset: {e}")
+                            break
+                        normedState = self.env.normalizeState(raw_reset_state, i)
+                        obs_tensor[i] = torch.tensor(normedState, dtype=torch.float32, device=self.device)
+                    else:
+                        # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
+                        self.env.previousState = raw_next_state
 
                 # Aggiorniamo il tensore corrente per il prossimo step
-                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device).unsqueeze(0)
+            
             
             # --- 6. BOOTSTRAPPING (Valore finale) ---
             _, _, _, next_value = self.get_action_and_value(obs_tensor)
@@ -300,13 +304,16 @@ class TeacherModel(nn.Module):
         t_dones = torch.stack(b_dones)
 
         advantages, returns = self.compute_gae(t_rewards, t_values, t_dones, next_value)
-
-        flat_obs = t_obs.view(-1, t_obs.shape[-1])
-        flat_actions = t_actions.view(-1, t_actions.shape[-1])
-        flat_logprobs = t_logprobs.view(-1)
-        flat_returns = returns.view(-1)
-        flat_advantages = advantages.view(-1)
-        flat_values = t_values.view(-1)
+        
+        
+        # ----- Flattening ------
+        T, N, _ = t_obs.shape
+        flat_obs = t_obs.view(T * N, self.state_dim)
+        flat_actions = t_actions.view(T * N, -1)
+        flat_logprobs = t_logprobs.view(T * N)
+        flat_values = t_values.view(T * N)
+        flat_returns = returns.view(T * N)
+        flat_advantages = advantages.view(T * N)
 
         batch_data = (flat_obs, flat_actions, flat_logprobs, flat_returns, flat_advantages, flat_values)
         
@@ -362,26 +369,24 @@ class TeacherModel(nn.Module):
         
         # 1. SETUP ENV & CONNECTION
         # Inizializziamo l'ambiente
-        env = IkemenEnvironment(training_mode='teacher')
         try:
-            env.launch_game()
-            env.connect()
+            self.env.start()
             
-            raw_init = env.wait_for_match_start()
-            last_obs = env.normalizeState(raw_init)
-            env.previousState = raw_init # Inizializziamo per il reward
+            raw_init, _ = self.env.wait_for_match_start()
+            last_obs = self.env.normalizeState(raw_init)
+            self.env.previousState = raw_init # Inizializziamo per il reward
             
             print("Environment connected successfully.")
         except Exception as e:
             print(f"Critical Error: Could not connect to environment. {repr(e)}")
-            env.close_game()
+            self.env.close_game()
             return
 
         # 2. SETUP OPTIMIZER & OPPONENT
         optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
         
         # Opponent (Copia congelata)
-        opponent_model = copy.deepcopy(self)
+        opponent_model = self.make_copy()
         opponent_model.to(self.device)
         opponent_model.eval()
         for param in opponent_model.parameters():
@@ -393,11 +398,11 @@ class TeacherModel(nn.Module):
         win_rate_history = deque(maxlen=5)
 
         # --- TRAINING LOOP ---
+        print("Start episode loop")
         for update in range(1, total_updates + 1):
             
             # A. RACCOLTA DATI
             batch_data, next_obs, win_rate = self.runEpisode(
-                env, 
                 last_obs, 
                 self.rollout_steps, 
                 opponent_model
@@ -406,11 +411,11 @@ class TeacherModel(nn.Module):
             if batch_data is None:
                 print(f"Update {update}: Skipping update due to lack of data. Resyncing...")
                 try:
-                    raw_new = env.reset()
+                    raw_new, _ = self.env.reset()
                     if raw_new is None:
                         raise RuntimeError("Reset did not return a valid state.")
-                    last_obs = env.normalizeState(raw_new)
-                    env.previousState = raw_new
+                    last_obs = self.env.normalizeState(raw_new)
+                    self.env.previousState = raw_new
                 except Exception as e:
                     print(f"Critical Error during resync: {e}. Ending training.")
                     break
@@ -429,8 +434,7 @@ class TeacherModel(nn.Module):
             
             # C. LOGGING
             avg_return = batch_data[3].mean().item()
-            print(f"Update {update}/{total_updates} | Steps: {global_step} | "
-                  f"Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
+            print(f"Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC
             # Se il learner vince > 60% delle volte, diventa il nuovo maestro
@@ -445,4 +449,4 @@ class TeacherModel(nn.Module):
                 print(f"Checkpoint saved at update {update}")
 
         print("Training completed.")
-        env.close_game()
+        self.env.close_game()
