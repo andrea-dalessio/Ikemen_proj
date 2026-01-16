@@ -1,4 +1,4 @@
-from pycode import StudentModel, TeacherModel, IkemenEnvironment
+from pycode import StudentModel, TeacherModel, IkemenEnvironment, SuperEnvironment
 import argparse
 
 parser = argparse.ArgumentParser(description="Select your running mode! --teacherTrain for training with teacher model, --studentTrain for training with student model, --eval for playing with the trained student model")
@@ -10,9 +10,13 @@ args = parser.parse_args()
 
 # --- Teacher Training Mode ---
 if args.teacherTrain:
-    env = IkemenEnvironment(training_mode="teacher")
+    env = SuperEnvironment(training_mode="teacher")
     model = TeacherModel(env)
-    model.trainPPO()
+    try:
+        model.trainPPO()
+    finally:
+        env.disconnect()
+        env.close_game()
     
 elif args.studentTrain:
     env = IkemenEnvironment(training_mode="student")

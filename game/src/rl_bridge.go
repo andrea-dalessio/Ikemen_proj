@@ -60,8 +60,11 @@ func writeU32(conn net.Conn, v uint32) error {
 }
 
 func StartRLServer() {
-	fmt.Println("--- RL SERVER: Avvio RAW su porta 8080 ---")
-	ln, err := net.Listen("tcp", ":8080")
+	port := ":" + sys.cmdFlags["-port"]
+	fmt.Println(sys.cmdFlags)
+
+	fmt.Println("--- RL SERVER: Avvio RAW su porta " + port + " ---")
+	ln, err := net.Listen("tcp", port)
 	if err != nil {
 		fmt.Println("Errore bind:", err)
 		return
@@ -117,6 +120,7 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 	mu.Lock()
 	defer mu.Unlock()
 
+	fmt.Println("Sync with python")
 	if !IsConnected || conn == nil {
 		return AgentAction{}
 	}
@@ -134,26 +138,31 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 	if err != nil {
 		return AgentAction{}
 	}
-
+	fmt.Println("Set Write Deadline")
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 
 	// ---- SEND STATE ----
+	fmt.Println("First write")
 	if err := writeU32(conn, uint32(len(stateJSON))); err != nil {
 		return disconnect()
 	}
+	fmt.Println("Second write")
 	if _, err := conn.Write(stateJSON); err != nil {
 		return disconnect()
 	}
 
 	// ---- SEND IMAGE ----
+	fmt.Println("Third write")
 	if err := writeU32(conn, uint32(len(frame))); err != nil {
 		return disconnect()
 	}
+	fmt.Println("Fourth write")
 	if _, err := conn.Write(frame); err != nil {
 		return disconnect()
 	}
 
 	// ---- READ ACTION ----
+	fmt.Println("Read")
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	action, err = readAction(conn)
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -49,12 +48,13 @@ func closeLog(f *os.File) {
 }
 
 func main() {
-	go StartRLServer()
-	// Make save directories, if they don't exist
 	os.Mkdir("save", os.ModeSticky|0755)
 	os.Mkdir("save/replays", os.ModeSticky|0755)
 
+	fmt.Println(os.Args)
 	processCommandLine()
+	go StartRLServer()
+	// Make save directories, if they don't exist
 
 	// Try reading stats
 	if _, err := ioutil.ReadFile("save/stats.json"); err != nil {
@@ -108,70 +108,91 @@ func main() {
 }
 
 // Loops through given comand line arguments and processes them for later use by the game
+// func processCommandLine() {
+// 	// If there are command line arguments
+// 	if len(os.Args[1:]) > 0 {
+// 		sys.cmdFlags = make(map[string]string)
+// 		key := ""
+// 		player := 1
+// 		r1, _ := regexp.Compile("^-[h%?]")
+// 		r2, _ := regexp.Compile("^-")
+// 		// Loop through arguments
+// 		for _, a := range os.Args[1:] {
+// 			// If getting help about command line options
+// 			if r1.MatchString(a) {
+// 				text := `Options (case sensitive):
+// -h -?                   Help
+// -log <logfile>          Records match data to <logfile>
+// -r <path>               Loads motif <path>. eg. -r motifdir or -r motifdir/system.def
+// -lifebar <path>         Loads lifebar <path>. eg. -lifebar data/fight.def
+// -storyboard <path>      Loads storyboard <path>. eg. -storyboard chars/kfm/intro.def
+
+// Quick VS Options:
+// -p<n> <playername>      Loads player n, eg. -p3 kfm
+// -p<n>.ai <level>        Sets player n's AI to <level>, eg. -p1.ai 8
+// -p<n>.color <col>       Sets player n's color to <col>
+// -p<n>.power <power>     Sets player n's power to <power>
+// -p<n>.life <life>       Sets player n's life to <life>
+// -tmode1 <tmode>         Sets p1 team mode to <tmode>
+// -tmode2 <tmode>         Sets p2 team mode to <tmode>
+// -time <num>             Round time (-1 to disable)
+// -rounds <num>           Plays for <num> rounds, and then quits
+// -s <stagename>          Loads stage <stagename>
+
+// Debug Options:
+// -nojoy                  Disables joysticks
+// -nomusic                Disables music
+// -nosound                Disables all sound effects and music
+// -windowed               Windowed mode (disables fullscreen)
+// -togglelifebars         Disables display of the Life and Power bars
+// -maxpowermode           Enables auto-refill of Power bars
+// -ailevel <level>        Changes game difficulty setting to <level> (1-8)
+// -speed <speed>          Changes game speed setting to <speed> (10%%-200%%)
+// -stresstest <frameskip> Stability test (AI matches at speed increased by <frameskip>)
+// -speedtest              Speed test (match speed x100)`
+//
+//					//ShowInfoDialog(text, "I.K.E.M.E.N Command line options")
+//					fmt.Printf("I.K.E.M.E.N Command line options\n\n" + text + "\nPress ENTER to exit")
+//					var s string
+//					fmt.Scanln(&s)
+//					os.Exit(0)
+//					// If a control argument starting with - (eg. -p3, -s, -rounds)
+//				} else if r2.MatchString(a) {
+//					// Set a blank value for the key to start with
+//					sys.cmdFlags[a] = ""
+//					// Prepare the key for the next argument
+//					key = a
+//					// If an argument with no key
+//				} else if key == "" {
+//					// Set p1/p2's name
+//					sys.cmdFlags[fmt.Sprintf("-p%v", player)] = a
+//					player += 1
+//					// If a key is prepared for this argument
+//				} else {
+//					// Set the argument for this key
+//					sys.cmdFlags[key] = a
+//					key = ""
+//				}
+//			}
+//		}
+//	}
 func processCommandLine() {
-	// If there are command line arguments
-	if len(os.Args[1:]) > 0 {
-		sys.cmdFlags = make(map[string]string)
-		key := ""
-		player := 1
-		r1, _ := regexp.Compile("^-[h%?]")
-		r2, _ := regexp.Compile("^-")
-		// Loop through arguments
-		for _, a := range os.Args[1:] {
-			// If getting help about command line options
-			if r1.MatchString(a) {
-				text := `Options (case sensitive):
--h -?                   Help
--log <logfile>          Records match data to <logfile>
--r <path>               Loads motif <path>. eg. -r motifdir or -r motifdir/system.def
--lifebar <path>         Loads lifebar <path>. eg. -lifebar data/fight.def
--storyboard <path>      Loads storyboard <path>. eg. -storyboard chars/kfm/intro.def
-
-Quick VS Options:
--p<n> <playername>      Loads player n, eg. -p3 kfm
--p<n>.ai <level>        Sets player n's AI to <level>, eg. -p1.ai 8
--p<n>.color <col>       Sets player n's color to <col>
--p<n>.power <power>     Sets player n's power to <power>
--p<n>.life <life>       Sets player n's life to <life>
--tmode1 <tmode>         Sets p1 team mode to <tmode>
--tmode2 <tmode>         Sets p2 team mode to <tmode>
--time <num>             Round time (-1 to disable)
--rounds <num>           Plays for <num> rounds, and then quits
--s <stagename>          Loads stage <stagename>
-
-Debug Options:
--nojoy                  Disables joysticks
--nomusic                Disables music
--nosound                Disables all sound effects and music
--windowed               Windowed mode (disables fullscreen)
--togglelifebars         Disables display of the Life and Power bars
--maxpowermode           Enables auto-refill of Power bars
--ailevel <level>        Changes game difficulty setting to <level> (1-8)
--speed <speed>          Changes game speed setting to <speed> (10%%-200%%)
--stresstest <frameskip> Stability test (AI matches at speed increased by <frameskip>)
--speedtest              Speed test (match speed x100)`
-				//ShowInfoDialog(text, "I.K.E.M.E.N Command line options")
-				fmt.Printf("I.K.E.M.E.N Command line options\n\n" + text + "\nPress ENTER to exit")
-				var s string
-				fmt.Scanln(&s)
-				os.Exit(0)
-				// If a control argument starting with - (eg. -p3, -s, -rounds)
-			} else if r2.MatchString(a) {
-				// Set a blank value for the key to start with
-				sys.cmdFlags[a] = ""
-				// Prepare the key for the next argument
-				key = a
-				// If an argument with no key
-			} else if key == "" {
-				// Set p1/p2's name
-				sys.cmdFlags[fmt.Sprintf("-p%v", player)] = a
-				player += 1
-				// If a key is prepared for this argument
+	sys.cmdFlags = make(map[string]string)
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			// If next element exists and is not a flag, assign as value
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				sys.cmdFlags[a] = args[i+1]
+				i++ // skip next element
 			} else {
-				// Set the argument for this key
-				sys.cmdFlags[key] = a
-				key = ""
+				sys.cmdFlags[a] = "" // flag without value
 			}
+		} else {
+			// Positional argument (p1/p2 name)
+			player := len(sys.cmdFlags)/2 + 1 // crude but works
+			sys.cmdFlags[fmt.Sprintf("-p%v", player)] = a
 		}
 	}
 }
