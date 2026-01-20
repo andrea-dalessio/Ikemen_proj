@@ -1,16 +1,18 @@
+from collections import deque
+import numpy as np
+import os
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from .memoryStack import MemoryStack
-from .visualNetwork import CNNNetwork
+from .network import DecisionNetwork
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
 class StudentModel(nn.Module):
-    def __init__(self, env, configs:dict):
+    def __init__(self, env, configs):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')
@@ -20,255 +22,444 @@ class StudentModel(nn.Module):
             self.device = torch.device('cpu')
             print(f"Using device: cpu")
         
-        self.CONFIGS = configs
-        
-        self.debug = self.CONFIGS['debug']
-        self.actionSpace = self.CONFIGS['actionSpaceSize']
-        self.gamma = self.CONFIGS['gamma']
-        self.delta = self.CONFIGS['delta']
-        self.episodes = self.CONFIGS['episodes']
-        self.learningRate = self.CONFIGS['lr']
-        self.maxBacktrack = self.CONFIGS['backtrack']
-        self.stackSize = configs['stackSize']
-        
-        
-        w = configs['windowW']
-        h = configs['windowH']
-        
-        self.policyEstimator=CNNNetwork(w,h, self.actionSpace, self.device, self.stackSize).to(device)
-        self.valueEstimator=CNNNetwork(w,h, 1, self.device, self.stackSize).to(device)
-        
-        self.memory = MemoryStack(self.stackSize)
-        
+        self.configs = configs
         self.env = env
+        if self.env.count is not None:
+            self.env_number = self.env.count
+        else:
+            self.env_number = 1 
+        
+        self.saveName = f'{os.getcwd()}/models_saves/teacher_model.pt'
+        
+        self.gamma = configs['general']['gamma']
+        self.gae_lambda = configs['general']['gae_lambda']
+        self.episodes = configs['teacherModel']['episodes']
+        self.lr = configs['general']['lr']
+        self.clip_epsilon = configs['general']['clip_epsilon']
+        self.entropy_coef = configs['general']['entropy_coef']
+        self.value_loss_coef = configs['general']['value_loss_coef']
+        self.max_grad_norm = configs['general']['max_grad_norm']
+        self.update_epochs = configs['teacherModel']['update_epochs']
+        self.minibatch_size = configs['teacherModel']['minibatch_size']
+        self.rollout_steps = configs['teacherModel']['rollout_steps']
+        
+        self.state_dim = env.observation_space[0]
+        self.actionsMove = env.action_space[0]
+        self.actionsHit = env.action_space[1]
+        
+        self.batch_size = self.env_number * self.rollout_steps
+        
+        self.network = DecisionNetwork(self.state_dim, self.actionsMove, self.actionsHit)
+        
+        self.to(self.device)
+        
+        
+    def make_copy(self):
+        model = DecisionNetwork(self.state_dim, self.actionsMove, self.actionsHit)
+        model.load_state_dict(self.network.state_dict())
+        return model
+    
+    # Changing momentarily any additional functions. Recover them in previous commits if needed.
+    def compute_gae(self, rewards, values, dones, next_value):
+        T, N = rewards.shape
+        advantages = torch.zeros_like(rewards)
+        lastgaelam = torch.zeros(N, device=self.device)
 
-    def FVP(self, v, states, old_dist, damping=1e-1):
-        newLogits = self.policyEstimator(states)
-        newDistribution = torch.distributions.Categorical(logits=newLogits)
+        # iterate backwards in time
+        for t in reversed(range(T)):
+            if t == T - 1:
+                nextnonterminal = 1.0 - dones[t]
+                nextvalues = next_value
+            else:
+                nextnonterminal = 1.0 - dones[t + 1]
+                nextvalues = values[t + 1]
 
-        divergence = torch.distributions.kl_divergence(old_dist, newDistribution).mean()
+            delta = rewards[t] + self.gamma * nextvalues * nextnonterminal - values[t]
+            lastgaelam = lastgaelam = delta + self.gamma * self.gae_lambda * nextnonterminal * lastgaelam
+            advantages[t] = lastgaelam
 
-        grads_d1 = torch.autograd.grad(divergence, self.policyEstimator.parameters(), create_graph=True)
+        returns = advantages + values
+        return advantages, returns
 
-        vectorizeGradients_d1 = vectorize(grads_d1)
-        grad_v = torch.dot(vectorizeGradients_d1, v)
+    def ppo_update(self, model, optimizer, batch_data, last_obs):
+        """Esegue l'aggiornamento dei pesi della rete."""
+        # Scompattiamo i dati del buffer
+        b_obs, b_actions, b_logprobs, b_returns, b_advantages, b_values = batch_data
 
-        grads_d2 = torch.autograd.grad(grad_v, self.policyEstimator.parameters())
+        current_batch_size = b_obs.shape[0]
+        
+        last_ping_time = time.time()
+        ping_interval = 2.0  # seconds
+        
+        # Ciclo di epoche
+        for epoch in range(self.update_epochs):
+            indices = np.random.permutation(current_batch_size)
+            
+            for start in range(0, current_batch_size, self.minibatch_size):
+                end = start + self.minibatch_size
+                mb_idxs = indices[start:end]
 
-        vectorizeGradients_d2 = vectorize(grads_d2)
+                # --- CODICE PPO STANDARD ---
+                _, new_logprobs, entropy, new_values = model.get_action_and_value(b_obs[mb_idxs], b_actions[mb_idxs])
+                logratio = new_logprobs - b_logprobs[mb_idxs]
+                ratio = logratio.exp()
+                mb_advantages = b_advantages[mb_idxs]
+                if mb_advantages.std() > 1e-8:
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                pg_loss1 = -mb_advantages * ratio
+                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                policy_loss = torch.max(pg_loss1, pg_loss2).mean()
+                value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
+                loss = policy_loss - (self.entropy_coef * entropy.mean()) + (self.value_loss_coef * value_loss)
 
-        return vectorizeGradients_d2 + damping * v
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), self.max_grad_norm)
+                optimizer.step()
+                # ---------------------------
 
-    def conjugateGradient(self, state, old_dist, b, maxIterations=10, tolerance=1e-10):
-        x = torch.zeros_like(b)
-        residual = b.clone()
-        direction = b.clone()
-        rdotr = torch.dot(residual, residual)
-
-        for _ in range(maxIterations):
-            Fvp_p = self.FVP(direction, state, old_dist)
-            alpha = rdotr / (torch.dot(direction, Fvp_p) + 1e-8)
-
-            x = x + alpha * direction
-            residual = residual - alpha * Fvp_p
-            new_rdotr = torch.dot(residual, residual)
-            if new_rdotr < tolerance:
-                break
-
-            beta = new_rdotr / rdotr
-            direction = residual + beta * direction
-            rdotr = new_rdotr
-
-        return x
+                # --- KEEP ALIVE CHECK ---
+                # Se è passato troppo tempo dall'ultimo contatto con il gioco
+                if time.time() - last_ping_time > ping_interval:
+                    last_obs = self.keep_alive(last_obs)
+                    last_ping_time = time.time()
+        
+        return last_obs # Return updated last_obs after keep-alive
+    
+    def get_action_and_value(self, x, action=None):
+        """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
+    
+        logits_move, logits_attack, value = self.network.forward(x)
+        
+        # 2. Creazione Distribuzioni
+        dist_move = torch.distributions.Categorical(logits=logits_move)
+        dist_attack = torch.distributions.Categorical(logits=logits_attack)
+        
+        if action is None:
+            # Inferenza: Campioniamo le azioni
+            action_move = dist_move.sample()
+            action_attack = dist_attack.sample()
+            action = torch.stack([action_move, action_attack], dim=1)
+        else:
+            # Training: Usiamo le azioni passate
+            action_move = action[:, 0]
+            action_attack = action[:, 1]
+            
+        # 3. Calcolo Log Probabilità (Somma dei logaritmi per eventi indipendenti)
+        log_prob = dist_move.log_prob(action_move) + dist_attack.log_prob(action_attack)
+        
+        # 4. Entropia
+        entropy = dist_move.entropy() + dist_attack.entropy()
+        
+        return action, log_prob, entropy, value 
     
     def setParameters(self, parametersVector):
         index = 0
         with torch.no_grad():
-            for param in self.policyEstimator.parameters():
+            for param in self.parameters():
                 n = param.numel()
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
     
-    def act(self, state, mode='test'):
-        self.memory.record(state)    
-        networkInput = self.memory.get()
+    def act(self, state, mode='exploit'):
         with torch.no_grad():
-            logits = self.policyEstimator(networkInput)
-        if mode == 'train':
-            dist = torch.distributions.Categorical(logits=logits)
-            action = dist.sample()
+            logits_move, logits_attack = self.network.actionOnly(state)
+        if mode == 'explore':
+            dist_move = torch.distributions.Categorical(logits=logits_move)
+            dist_attack = torch.distributions.Categorical(logits=logits_attack)
+            action_move = dist_move.sample()
+            action_attack = dist_attack.sample()
+            action = torch.stack([action_move, action_attack], dim=1)
         else:
-            action = logits.argmax(dim=-1)
+            action_move = logits_move.argmax(dim=-1)
+            action_attack = logits_attack.argmax(dim=-1)
+            action = torch.stack([action_move, action_attack], dim=1)
+
         return action.item()
 
-    # TODO adapt the episode logic to ikemen
-    def runEpisode(self):
-        states   = []
-        actions  = []
-        rewards  = []
-        logProbabilities = []
+    # TODO : Clean accordingly...
+    def runEpisode(self, last_obs, rollout_steps, opponent_model):
+        """
+        Raccoglie dati simulando un loop 'step' manuale poiché l'env non ne ha uno unificato.
+        """
+        b_obs, b_actions, b_logprobs, b_rewards, b_dones, b_values = [], [], [], [], [], []
         
-        state = self.env.getState()
+        batch_wins = 0
+        batch_matches = 0
+
+        crash_occurred = False
         
-    def computeReturns(self, rewards, duration):
-        returns = np.zeros((duration,))
-        G = 0.0
-        for t in reversed(range(duration)):
-            G = rewards[t] + self.gamma * G
-            returns[t] = G
-        return returns
+        # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
+        obs_tensor = torch.tensor(last_obs, dtype=torch.float32).to(self.device)
+        if self.env_number == 1:
+            obs_tensor = obs_tensor.unsqueeze(0)
 
-    def computeAdvantage(self, states, returns):
-        values = self.valueEstimator(states)
-        values = values.squeeze(-1)
-        
-        advantages = returns - values.detach()
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return advantages
+        # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
+        if self.env.previousState is None:
+            self.env.previousState = last_obs.copy()
 
-    def computedSurrogateAdvantage(self, distribution, actions, advantages, old_logps):
-        logProbabilities = distribution.log_prob(actions)
-        surrogateAdvantage = torch.exp(logProbabilities - old_logps) * advantages
-        return surrogateAdvantage.mean()
-
-    def train(self):
-        print("Start training")
-        optimizer = torch.optim.Adam(self.valueEstimator.parameters(), lr=self.learningRate)
-        
-        rewardMemory = np.zeros((self.episodes), dtype=np.float32)
-
-        for episode in range(self.episodes):
-            if self.debug:
-                print(f"Episode [{episode}/{self.episodes}]: Start")
-            data, duration = self.runEpisode()
-            if self.debug:
-                print(f"Done after {duration} time steps")
-            states, actions, rewards, old_logps = data
-            returns = self.computeReturns(rewards, duration)
-            
-            states = torch.stack(states).to(self.device)
-            actions = torch.tensor(actions, dtype=torch.uint8, device=self.device)
-            returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-            old_logps = torch.stack(old_logps).detach().to(self.device)
-            
-            rewardMemory[episode] = sum(rewards)
-            
-            new_values = self.valueEstimator(states)
-            valueLoss = F.mse_loss(new_values.squeeze(-1), returns)
-            if self.debug:    
-                print(f"{valueLoss}")
-            
-            #Jump start value estimator
-            if episode < 40:
-                optimizer.zero_grad()
-                valueLoss.backward()
-                optimizer.step()
-                if self.debug:
-                    print("Warmup step, skip policy update")
-                else:
-                    episodeMetric = rewardMemory[0:episode].mean()
-                    print(f"{episode}:{episodeMetric:.3f},{valueLoss:.3f}")
-                continue      
-            
-            if self.debug:
-                print("Computes advantages...", end=' ')
-            advantages = self.computeAdvantage(states, returns)
-            if self.debug:
-                print("Done\nComputing surrogate loss...", end=' ')
-            
-            new_logits = self.policyEstimator(states)
-            new_distribution = torch.distributions.Categorical(logits=new_logits)
-            surrogateAdvantage = self.computedSurrogateAdvantage(
-                new_distribution, 
-                actions, 
-                advantages, 
-                old_logps
-            )
-            
-            if self.debug:
-                print(f'{surrogateAdvantage}\nValue loss... ', end=' ')
-            
-            if self.debug:
-                print("Computing update step...", end=' ')
-            with torch.no_grad():
-                old_logits = self.policyEstimator(states)
-                old_dist = torch.distributions.Categorical(logits=old_logits)
-            
-            self.policyEstimator.zero_grad()
-            gradient = torch.autograd.grad(
-                surrogateAdvantage, 
-                self.policyEstimator.parameters(), 
-                retain_graph=True
-            )
-            g = vectorize(gradient)
-            
-            stepDir = self.conjugateGradient(states, old_dist, g)
-            stepSizeDen = torch.dot(stepDir, self.FVP(stepDir, states, old_dist))
-            stepSize = torch.sqrt(2 * self.delta /(stepSizeDen + 1e-8))
-            stepSize = torch.clamp(stepSize, 0.0, 1.0)
-            fullStep = stepDir * stepSize
-            if self.debug:
-                print("Done")
-
-            # Line search
-            if self.debug:
-                print("Starting line search")
-            currentParams = vectorize(self.policyEstimator.parameters())
-            success = False
-            stepFraction = 1
-            for _ in range(self.maxBacktrack):
-                candidateParams = currentParams + stepFraction * fullStep
-                self.setParameters(candidateParams)
+        with torch.no_grad():
+            for _ in range(rollout_steps):
+                # --- 1. POLICY INFERENZA ---
+                # Player 1 (Teacher)
+                a1, logp1, _, v1 = self.get_action_and_value(obs_tensor)
                 
-                # Compute new surrogate and KL
-                with torch.no_grad():
-                    new_logits = self.policyEstimator(states)
-                    new_dist = torch.distributions.Categorical(logits=new_logits)
-                    new_surrogateAdvantage = self.computedSurrogateAdvantage(
-                        new_dist, 
-                        actions, 
-                        advantages, 
-                        old_logps
-                    )
+                # Player 2 (Opponent) - Vede lo stato FLIPPATO
+                opp_obs_tensor = self.flip_observation(obs_tensor)
+                a2, _, _, _ = opponent_model.get_action_and_value(opp_obs_tensor)
+                
+                # --- 2. PREPARAZIONE AZIONI ---
+                act_p1 = a1.cpu().numpy()
+                act_p2 = a2.cpu().numpy()
 
-                    divergence = torch.distributions.kl_divergence(old_dist, new_dist).mean()
-
-                if self.debug:
-                    print(f"Improvement: {new_surrogateAdvantage - surrogateAdvantage}")
-                    print(f"Divergence: {divergence}")
-                if new_surrogateAdvantage > surrogateAdvantage and divergence <= self.delta:
-                    if self.debug:
-                        print(f"Line search successful, reduction factor: {stepFraction:.4f}")
-                    success = True
+                # --- 3. INTERAZIONE ENV (Manuale) ---
+                # A. Invia azioni
+                try:
+                    self.env.executeAction(act_p1, act_p2)
+                    raw_next_state, _ = self.env.recieve()
+                except Exception as e:
+                    print(f"Errore invio azioni: {e}. Interrompo rollout.")
+                    crash_occurred = True
                     break
-                
-                else:
-                    stepFraction /= 2
-                    if self.debug:
-                        print(f"Candidate rejected, new fraction: {stepFraction}")
-        
-            if not success:
-                self.setParameters(currentParams)
-                if self.debug:
-                    print('Line search failed!')
-            
-            optimizer.zero_grad()
-            valueLoss.backward()
-            optimizer.step()
-            
-            episodeMetric = rewardMemory[episode-20:episode].mean()
-            
-            if self.debug:
-                print(f'Episode {episode}> Recent Mean Reward: {episodeMetric:.2f},Current Reward:{rewardMemory[episode]}, Value Loss: {valueLoss.item():.2f}, Divergence: {divergence.item():.6f}')
-            else:
-                print(f'{episode}>{episodeMetric:.3f},{rewardMemory[episode]},{valueLoss.item():.3f},{divergence.item():.3f}')
-        return
 
+                # C. Calcola Reward e Done
+                # Nota: rewardCompute usa env.previousState. Dobbiamo assicurarci che sia settato.
+                # Se env.recieve non aggiorna env.previousState, lo facciamo noi alla fine del ciclo.
+                rewards, dones = self.env.rewardCompute(raw_next_state)
+                rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+                dones = torch.tensor(dones, dtype=torch.float32, device=self.device)      
+                
+                # --- 4. SALVATAGGIO DATI ---
+                b_obs.append(obs_tensor)
+                b_actions.append(a1)
+                b_logprobs.append(logp1)
+                b_values.append(v1.squeeze(-1))
+                b_rewards.append(rewards.float())
+                b_dones.append(dones.float())
+                
+                
+                next_obs_numpy = self.env.normalizeState(raw_next_state)
+                obs_tensor = torch.tensor(next_obs_numpy, dtype=torch.float32).to(self.device)
+                
+                # --- 5. GESTIONE FINE EPISODIO (RESET) ---
+                for i, done in enumerate(dones):
+                    if done:
+                        batch_matches += 1
+                        if rewards[i] > 0: 
+                            batch_wins += 1 # Assumendo reward positivo per vittoria
+                        try:
+                            raw_reset_state, _ = self.env.reset(i)
+                        except Exception as e:
+                            print(f"Errore durante reset: {e}")
+                            break
+                        normedState = self.env.normalizeState(raw_reset_state, i)
+                        obs_tensor[i] = torch.tensor(normedState, dtype=torch.float32, device=self.device)
+                    else:
+                        # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
+                        self.env.previousState = raw_next_state
+
+                # Aggiorniamo il tensore corrente per il prossimo step
+            
+            
+            # --- 6. BOOTSTRAPPING (Valore finale) ---
+            _, _, _, next_value = self.get_action_and_value(obs_tensor)
+            next_value = next_value.flatten()
+
+        if crash_occurred or len(b_obs) == 0:
+            print("WARNING: No data collected in rollout. Skipping update.")
+            return None, None, 0.0, True
+
+        # --- 7. IMPACCHETTAMENTO ---
+        t_obs = torch.stack(b_obs)
+        t_actions = torch.stack(b_actions)
+        t_logprobs = torch.stack(b_logprobs)
+        t_values = torch.stack(b_values)
+        t_rewards = torch.stack(b_rewards)
+        t_dones = torch.stack(b_dones)
+
+        advantages, returns = self.compute_gae(t_rewards, t_values, t_dones, next_value)
+        
+        
+        # ----- Flattening ------
+        T, N, _ = t_obs.shape
+        flat_obs = t_obs.view(T * N, self.state_dim)
+        flat_actions = t_actions.view(T * N, -1)
+        flat_logprobs = t_logprobs.view(T * N)
+        flat_values = t_values.view(T * N)
+        flat_returns = returns.view(T * N)
+        flat_advantages = advantages.view(T * N)
+
+        batch_data = (flat_obs, flat_actions, flat_logprobs, flat_returns, flat_advantages, flat_values)
+        
+        # Calculate Win Rate
+        win_rate = batch_wins / batch_matches if batch_matches > 0 else 0.0
+        
+        # Return next_obs (in numpy format) to maintain continuity in the main loop
+        return batch_data, next_obs_numpy, win_rate, False
+    
+    def keep_alive(self, current_obs):
+        """
+        Needed to keep the connection alive with the Ikemen env while the training runs!
+        """
+        # Generating no-op actions to keep servers alive
+        n_envs = self.env_number
+        dummy_action = np.zeros((n_envs, 2), dtype=int) 
+        
+        try:
+            self.env.executeAction(dummy_action, dummy_action)
+            
+            raw_next_states, _ = self.env.recieve()
+            
+            # Get new state to compute update
+            if self.env.count > 1:
+                # Case SuperEnvironment
+                self.env.envs[0].previousState = raw_next_states[0]
+                # Note: SuperEnv handles previousState for all envs internally.
+            else:
+                self.env.previousState = raw_next_states
+                
+
+            return self.env.normalizeState(raw_next_states)
+            
+        except Exception as e:
+            print(f"Warning: Keep-alive failed: {e}")
+            return current_obs    
+
+    def flip_observation(self, obs):
+        """ Flips observation for opponent's perspective """
+        
+        flipped = obs.clone()
+
+        # From our 12-dim observation vec:
+        # 0: P1 HP,       1: P2 HP
+        # 2: Rel X,       3: Rel Y
+        # 4: P1 Abs X,    5: P2 Abs X
+        # 6: P1 Facing,   7: P2 Facing
+        # 8: P1 Power,    9: P2 Power
+        # 10: P1 Anim,    11: P2 Anim
+
+        # HP
+        flipped[..., 0] = obs[..., 1]
+        flipped[..., 1] = obs[..., 0]
+        
+        # Absolute X
+        flipped[..., 4] = obs[..., 5]
+        flipped[..., 5] = obs[..., 4]
+        
+        # Facing
+        flipped[..., 6] = obs[..., 7]
+        flipped[..., 7] = obs[..., 6]
+        
+        # Power
+        flipped[..., 8] = obs[..., 9]
+        flipped[..., 9] = obs[..., 8]
+        
+        # Anim
+        flipped[..., 10] = obs[..., 11]
+        flipped[..., 11] = obs[..., 10]
+
+        # X distance flip: Se P2 è a dx (+), per P2 P1 è a sx (-)
+        flipped[..., 2] = -obs[..., 2]
+        
+        # Y distance flip: Se P2 è sopra (+), per P2 P1 è sotto (-)
+        flipped[..., 3] = -obs[..., 3]
+
+        # Time (13th extra dimension) remains unchanged but still copy it
+        flipped[..., 12] = obs[..., 12]
+        
+        return flipped    
+    
+    def trainPPO(self):
+        print(f"Start Self-Play Training on {self.device}")
+        
+        # 1. SETUP ENV & CONNECTION
+        # Inizializziamo l'ambiente
+        try:
+            self.env.start()
+            
+            raw_init, _ = self.env.wait_for_match_start()
+            last_obs = self.env.normalizeState(raw_init)
+            self.env.previousState = raw_init # Inizializziamo per il reward
+            
+            print("Environment connected successfully.")
+        except Exception as e:
+            print(f"Critical Error: Could not connect to environment. {repr(e)}")
+            self.env.close_game()
+            return
+
+        # 2. SETUP OPTIMIZER & OPPONENT
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+        
+        # Opponent (Copia congelata)
+        opponent_model = self.make_copy()
+        opponent_model.to(self.device)
+        opponent_model.eval()
+        for param in opponent_model.parameters():
+            param.requires_grad = False
+
+        # Variabili Loop
+        total_updates = self.episodes
+        global_step = 0
+        win_rate_history = deque(maxlen=5)
+
+        # --- TRAINING LOOP ---
+        print("Start episode loop")
+        for update in range(1, total_updates + 1):
+            
+            # A. RACCOLTA DATI
+            batch_data, next_obs, win_rate, crash_occurred = self.runEpisode(
+                last_obs, 
+                self.rollout_steps, 
+                opponent_model
+            )
+            
+            if crash_occurred or batch_data is None:
+                print(f"Update {update}: Skipping update due to crash (crash_occurred={crash_occurred}) or lack of data. Resyncing...")
+                try:
+                    raw_new, _ = self.env.hard_restart()
+                    last_obs = self.env.normalizeState(raw_new)
+                    self.env.previousState = raw_new
+                    print("Resync successful. Continuing training.")
+                except Exception as e:
+                    print(f"Critical Error during resync: {e}. Ending training.")
+                    break
+                continue
+            
+            # Aggiorniamo stato e contatori
+            last_obs = next_obs
+            global_step += self.rollout_steps
+            
+            # Tracking
+            win_rate_history.append(win_rate)
+            avg_win_rate = sum(win_rate_history) / len(win_rate_history) if len(win_rate_history) > 0 else 0.0
+            
+            # B. UPDATE PPO (LEARNER)
+            last_obs = self.ppo_update(self, optimizer, batch_data, last_obs)
+            
+            # C. LOGGING
+            avg_return = batch_data[3].mean().item()
+            print(f"Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
+
+            # D. OPPONENT UPGRADE LOGIC
+            # Se il learner vince > 60% delle volte, diventa il nuovo maestro
+            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
+                print("🚀 UPGRADE: Opponent updated to current Learner policy.")
+                opponent_model.load_state_dict(self.state_dict())
+                win_rate_history.clear()
+            
+            # E. SAVE CHECKPOINT
+            if update % 10 == 0:
+                self.save()
+                print(f"Checkpoint saved at update {update}")
+
+        print("Training completed.")
+        self.env.close_game()
+        
     def save(self):
-        torch.save(self.state_dict(), 'model.pt')
+        torch.save(self.state_dict(), self.saveName)
 
     def load(self):
-        self.load_state_dict(torch.load('model.pt', map_location=self.device))
+        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
 
     def to(self, device):
         ret = super().to(device)

@@ -41,6 +41,12 @@ elif args.eval:
     env = IkemenEnvironment(training_mode="student", port=8080)
     model = StudentModel(env)
     ...
-
+else:
+    print("""
+Missing flag, use at least one:
+    --teacherTrain: Train the teacher model
+    --studentTrain: Train the Student model
+    --eval: evaluate the student model
+        """)
     
 

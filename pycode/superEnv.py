@@ -59,22 +59,26 @@ class SuperEnvironment:
     def wait_for_match_start(self, timeout=60):
         print("Parallel handshaking with environments...")
         start_time = time.time()
-        results = [None] * self.count # Results from games
-        synced_mask = [False] * self.count # Is the round over?
+        results:list[tuple] = [(None, None) for _ in range(self.count)]  # Results from games
+        synced_mask = [False for _ in range(self.count)] # Is the round over?
         
         while not all(synced_mask):
             if time.time() - start_time > timeout:
                 raise TimeoutError("Global sync timed out.")
 
+
+            # print(results)
+            # print(synced_mask)
             for i, env in enumerate(self.envs):
                 if synced_mask[i]:
                     continue
                 
                 # Single sync attempt
-                res = env.sync_step()
+                frame, state = env.sync_step()
                 
-                if res is not None:
-                    results[i] = res
+                results[i] = (state, frame)
+                
+                if state is not None and frame is not None:
                     synced_mask[i] = True
                     print(f"[{i}] Synced!")
             

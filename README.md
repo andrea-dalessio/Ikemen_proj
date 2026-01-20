@@ -49,3 +49,5 @@ type RLGameState struct {
 "reset": "bool"
 }
 ~~~
+
+https://collab.dvb.bayern/spaces/TUMlfdv/pages/69119934/Convolutional+Neural+Network+for+Game

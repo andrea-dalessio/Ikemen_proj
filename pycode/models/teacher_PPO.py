@@ -1,4 +1,3 @@
-from pathlib import Path
 from collections import deque
 import numpy as np
 import os
@@ -7,18 +6,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .network import DecisionNetwork
+
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
-
-class ResidualBlock(nn.Module):
-    def __init__(self, size):
-        super().__init__()
-        self.fc = nn.Linear(size, size)
-        self.ln = nn.LayerNorm(size)
-    
-    def forward(self, x):
-        # Skip connection: f(x) + x
-        return F.relu(self.ln(self.fc(x))) + x
 
 class TeacherModel(nn.Module):
     def __init__(self, env, configs):
@@ -32,7 +23,13 @@ class TeacherModel(nn.Module):
             print(f"Using device: cpu")
         
         self.configs = configs
+        self.env = env
+        if self.env.count is not None:
+            self.env_number = self.env.count
+        else:
+            self.env_number = 1 
         self.saveName = f'{os.getcwd()}/models_saves/teacher_model.pt'
+        
         
         self.gamma = configs['general']['gamma']
         self.gae_lambda = configs['general']['gae_lambda']
@@ -43,46 +40,24 @@ class TeacherModel(nn.Module):
         self.value_loss_coef = configs['general']['value_loss_coef']
         self.max_grad_norm = configs['general']['max_grad_norm']
         self.update_epochs = configs['teacherModel']['update_epochs']
-        self.batch_size = configs['teacherModel']['batch_size']
         self.minibatch_size = configs['teacherModel']['minibatch_size']
         self.rollout_steps = configs['teacherModel']['rollout_steps']
         
         self.state_dim = env.observation_space[0]
         self.actionsMove = env.action_space[0]
         self.actionsHit = env.action_space[1]
-        self.env = env
-        if self.env.count is not None:
-            self.env_number = self.env.count
-        else:
-            self.env_number = 1 
+
         
-        # Now using an LSTM
-        self.input_layer = nn.Linear(self.state_dim, 512)
+        self.batch_size = self.env_number * self.rollout_steps
         
-        # Residual Blocks
-        self.res_block1 = ResidualBlock(512)
-        self.res_block2 = ResidualBlock(512)
-        self.res_block3 = ResidualBlock(512)
+        self.network = DecisionNetwork(self.state_dim, self.actionsMove, self.actionsHit)
         
-        self.feature_head = nn.Linear(512, 256)
-        
-        # Policy Heads (actor-critic)
-        self.movePolicy = nn.Linear(256, self.actionsMove)
-        self.hitPolicy = nn.Linear(256, self.actionsHit)
-        self.valueEstimator = nn.Linear(256, 1)
-               
         self.to(self.device)
         
         
     def make_copy(self):
-        model = TeacherModel(self.env, self.configs)
-        model.input_layer.load_state_dict(self.input_layer.state_dict())
-        model.res_block1.load_state_dict(self.res_block1.state_dict())
-        model.res_block2.load_state_dict(self.res_block2.state_dict())
-        model.res_block3.load_state_dict(self.res_block3.state_dict())
-        model.feature_head.load_state_dict(self.feature_head.state_dict())
-        model.hitPolicy.load_state_dict(self.hitPolicy.state_dict())
-        model.movePolicy.load_state_dict(self.movePolicy.state_dict())
+        model = DecisionNetwork(self.state_dim, self.actionsMove, self.actionsHit)
+        model.load_state_dict(self.network.state_dict())
         return model
     
     # Changing momentarily any additional functions. Recover them in previous commits if needed.
@@ -154,15 +129,8 @@ class TeacherModel(nn.Module):
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
-        x = F.relu(self.input_layer(x))
-        x = self.res_block1(x)
-        x = self.res_block2(x)
-        x = self.res_block3(x)
-        hidden = F.relu(self.feature_head(x))
-        
-        # 1. Calcolo Logits per le due teste
-        logits_move = self.movePolicy(hidden)
-        logits_attack = self.hitPolicy(hidden)
+    
+        logits_move, logits_attack, value = self.network.forward(x)
         
         # 2. Creazione Distribuzioni
         dist_move = torch.distributions.Categorical(logits=logits_move)
@@ -184,9 +152,6 @@ class TeacherModel(nn.Module):
         # 4. Entropia
         entropy = dist_move.entropy() + dist_attack.entropy()
         
-        # 5. Valore
-        value = self.valueEstimator(hidden)
-        
         return action, log_prob, entropy, value 
     
     def setParameters(self, parametersVector):
@@ -196,28 +161,10 @@ class TeacherModel(nn.Module):
                 n = param.numel()
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
-
-    def save(self):
-        torch.save(self.state_dict(), self.saveName)
-
-    def load(self):
-        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
-
-    def to(self, device):
-        ret = super().to(device)
-        ret.device = device
-        return ret
     
     def act(self, state, mode='exploit'):
-        networkInput = state
         with torch.no_grad():
-            x = F.relu(self.input_layer(networkInput))
-            x = self.res_block1(x)
-            x = self.res_block2(x)
-            x = self.res_block3(x)
-            hidden = F.relu(self.feature_head(x))
-            logits_move = self.movePolicy(hidden)
-            logits_attack = self.hitPolicy(hidden)
+            logits_move, logits_attack = self.network.actionOnly(state)
         if mode == 'explore':
             dist_move = torch.distributions.Categorical(logits=logits_move)
             dist_attack = torch.distributions.Categorical(logits=logits_attack)
@@ -508,3 +455,14 @@ class TeacherModel(nn.Module):
 
         print("Training completed.")
         self.env.close_game()
+        
+    def save(self):
+        torch.save(self.state_dict(), self.saveName)
+
+    def load(self):
+        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
+
+    def to(self, device):
+        ret = super().to(device)
+        ret.device = device
+        return ret

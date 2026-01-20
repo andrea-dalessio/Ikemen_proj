@@ -346,23 +346,21 @@ class IkemenEnvironment:
     # Adding a sync protocol...
     def sync_step(self):
         if self.socket is None:
-            return None
+            return None, None
 
         try:
             # Ping server with a no-op action
             self.executeAction((0, 0), (0, 0))
             
             # Quick listen (0.05s timeout)
-            self.socket.settimeout(0.05) 
+            self.socket.settimeout(0.08) 
             state, frame = self.recieve()
             self.socket.settimeout(None) # Restore blocking
             
             if state is not None and state.get('p1_hp', 0) > 0:
                 return state, frame
                 
-        except (ConnectionError, struct.error, socket.timeout):
-            pass
         except Exception as e:
             print(f"[{self.instance}] Sync step error: {e}")
             
-        return None
+        return None, None
