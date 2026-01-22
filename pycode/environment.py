@@ -60,7 +60,7 @@ class IkemenEnvironment:
         
         if training_mode == 'teacher':
             self.needFrame = False
-            self.observation_space = (13,)
+            self.observation_space = (17,)
         elif training_mode == 'student':
             self.needFrame = True
             self.observation_space = (CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number'])
@@ -69,6 +69,9 @@ class IkemenEnvironment:
         
         # Here's the subprocess constructor :)
         self.game_process = None
+        
+        # Track this to set the "t0" for each round
+        self.round_start_tick = 0
 
     def wait_for_match_start(self, timeout=30):
         """
@@ -140,7 +143,8 @@ class IkemenEnvironment:
             raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
         portNumber = str(self.port) # Adjust as needed  
-        launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
+        # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', 'time', '-1', '-port', portNumber] # Set to infinite time per round
+        launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', 'time', '-1', '-port', portNumber] # Set to infinite time per round
         print(f"[{self.instance}] Launching IkemenGO...")
         
         try:
@@ -213,33 +217,35 @@ class IkemenEnvironment:
             self.connected = False
             raise ConnectionError(f"[{self.instance}] Broken Pipe during send (Server closed connection).")
     
-
     def rewardCompute(self, state):
         done = False
-        reward = 0
+        reward = 0.0
+        MAX_LIFE = state.get('p1_life_max', 1000)
         
-        # Condizione di fine episodio (Done)
+        # Termination condition (Game win or loss). Trying to remove timeout conditions to stabilize environment behavior
         if state['p1_hp'] <= 0 or state['p2_hp'] <= 0:
             done = True
         
-        # Ricompensa basata sui danni
+        # Damage based reward
         if self.previousState is not None:
-            # Ricompensa principale: P1 guadagna per il danno fatto, perde per il danno subito
-            p1_damage_delta = self.previousState['p2_hp'] - state['p2_hp']
-            p2_damage_delta = self.previousState['p1_hp'] - state['p1_hp']
+            # Damage calc (assuming hp can only decrease)
+            diff_p1_hp = self.previousState['p1_hp'] - state['p1_hp']
+            diff_p2_hp = self.previousState['p2_hp'] - state['p2_hp']
             
-            # Ricompensa istantanea
-            reward += p1_damage_delta 
-            reward -= p2_damage_delta 
+            # NORMALIZED reward (we were getting negative trillion reward scores because with resets the hp diff counted also the +1000 refill)
+            reward += (diff_p2_hp / MAX_LIFE) * 10.0  # Reward for damage dealt
+            reward -= (diff_p1_hp / MAX_LIFE) * 5.0   # Penalty for damage taken
 
-            # Ricompensa per la vittoria/sconfitta (terminale)
-            if done:
-                if state['p1_hp'] > 0:
-                    reward += 100
-                else:
-                    reward -= 100
+            # ----REWARD SHAPING----
+            # 1. Retreat penalty (if you stay too far away from opponent, you get a small penalty (like GGST tension system))
+            distance = abs(state['p2_x'] - state['p1_x'])
+            if distance > 200:
+                reward -= 0.0005  # Be aggressive!
+                
+            # 2. Stalling penalty (No time limits in training, so penalties for staying too idle or bonuses for quick finishes are needed)
+            reward -= 0.001  # Small penalty each frame to encourage finishing the match quickly
 
-        # Assicura di avere uno stato precedente per il calcolo differenziale
+        # First frame fallback
         if self.previousState is None:
             reward = 0
 
@@ -262,10 +268,24 @@ class IkemenEnvironment:
         p1_y = state.get('p1_y', 0)
         p2_y = state.get('p2_y', 0)
         
-        current_tick = state.get('tick', 0)
-        MAX_ROUND_FRAMES = 6000.0
-        time_remain_norm = (MAX_ROUND_FRAMES - current_tick) / MAX_ROUND_FRAMES
-        time_feat = np.clip(time_remain_norm, 0.0, 1.0)
+        # Now using "time elapsed" feat instead of "time remaining"
+        raw_tick = state.get('tick', 0)
+        current_tick = raw_tick - self.round_start_tick
+        MAX_DURATION = 20000.0
+        if current_tick < 0: current_tick = 0  # Safety check
+        time_norm = current_tick / MAX_DURATION
+        time_feat = np.clip(time_norm, 0.0, 1.0)
+        
+        prev_p1_x = self.previousState.get('p1_x', p1_x) if self.previousState else p1_x
+        prev_p2_x = self.previousState.get('p2_x', p2_x) if self.previousState else p2_x
+        prev_p1_y = self.previousState.get('p1_y', p1_y) if self.previousState else p1_y
+        prev_p2_y = self.previousState.get('p2_y', p2_y) if self.previousState else p2_y
+        
+        # Velocities (normalized)
+        p1_dx = (p1_x - prev_p1_x) / 20.0  # Assuming max speed of 20 units/frame (estimated, fine-tune as needed)
+        p2_dx = (p2_x - prev_p2_x) / 20.0
+        p1_dy = (p1_y - prev_p1_y) / 20.0
+        p2_dy = (p2_y - prev_p2_y) / 20.0
         
         # Using normalized hp values to max values and distance between players
         state_vector = np.array([
@@ -281,14 +301,14 @@ class IkemenEnvironment:
             state.get('p2_power', 0) / 100.0,
             self.normalize_anim_smart(state.get('p1_anim_no', 0)),
             self.normalize_anim_smart(state.get('p2_anim_no', 0)),
-            time_feat
+            time_feat,
+            p1_dx, p1_dy, p2_dx, p2_dy
             ], 
             dtype=np.float32
         )
         
         return state_vector
         
-    
     def recieve(self): # Editing module to return frame only if needed. Also correcting bugs and restructuring state vector
         json_size = struct.unpack('>I', self.recieveHelper(4))[0]
         raw = json.loads(self.recieveHelper(json_size))
@@ -330,6 +350,7 @@ class IkemenEnvironment:
                 pass
             self.socket.setblocking(True)
             new_raw_state, new_frame = self.wait_for_match_start()
+            self.round_start_tick = new_raw_state.get('tick', 0)
             self.previousState = new_raw_state
             return new_raw_state, new_frame
         except Exception as e:

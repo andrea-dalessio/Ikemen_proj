@@ -421,6 +421,12 @@ class TeacherModel(nn.Module):
         # Time (13th extra dimension) remains unchanged but still copy it
         flipped[..., 12] = obs[..., 12]
         
+        # Added just now: speeds! The model isn't an RNN so to "Markovize" the state we add speeds as input features
+        flipped[..., 13] = -obs[..., 15]  # p2_dx flipped to p1_dx
+        flipped[..., 14] = -obs[..., 16]  # p2_dy flipped to p1_dy
+        flipped[..., 15] = -obs[..., 13]  # p1_dx flipped to p2_dx
+        flipped[..., 16] = -obs[..., 14]  # p1_dy flipped to p2_dy
+        
         return flipped    
     
     def trainPPO(self):
