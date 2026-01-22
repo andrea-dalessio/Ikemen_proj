@@ -1,0 +1,14 @@
+prefix=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg
+exec_prefix=${prefix}
+libdir=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg/lib
+includedir=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg/include
+
+Name: libswscale
+Description: FFmpeg image rescaling library
+Version: 8.3.100
+Requires: 
+Requires.private: libavutil >= 59.39.100
+Conflicts:
+Libs: -L${libdir}  -lswscale 
+Libs.private: -lm -latomic
+Cflags: -I${includedir}

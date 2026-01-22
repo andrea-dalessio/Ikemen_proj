@@ -1,0 +1,14 @@
+prefix=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg
+exec_prefix=${prefix}
+libdir=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg/lib
+includedir=/home/dalex/AIRO_2024-2025/Reinforcement_Learning/Ikemen_proj/game/build/ffmpeg/include
+
+Name: libavformat
+Description: FFmpeg container format library
+Version: 61.7.100
+Requires: 
+Requires.private: libavcodec >= 61.19.101, libswresample >= 5.3.100, libavutil >= 59.39.100
+Conflicts:
+Libs: -L${libdir}  -lavformat 
+Libs.private: -lm -latomic
+Cflags: -I${includedir}
