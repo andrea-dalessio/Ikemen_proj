@@ -1,16 +1,16 @@
-To do list:
-- Rendi il codice portable (i.e. in alcune linee di codice l'eseguibile di gioco  
-e' inserito come indirizzo assoluto e non come indirizzo relativo, e non riesco a farlo  
-funzionare in altro modo. Se riesci a risolvere questo bug e' tanto)  
-- Verifica tramite **stable_baseline3** (SubprocVecEnv) la possibilita' di avere  
-piu' istanze di IKEMEN GO aperte *(servira' usare -port o altre impostazioni di IKEMEN*  
-*probabilmente)*  
+# Learning I.K.E.M.En GO with Self-play PPO with distillation  
 
-Next up:
-- MLP expansion e training del teacher MLP tramite self play PPO  
-- Eventualmente introdurre un RNN per rendere il modello piu' robusto  
-- impostazione e training vision student tramite self play PPO e distillation  
+## Side branch 1  
 
+Affrontando il problema del *termination simplification* per eseguire un workaround sul problema di gestione  
+del timeout dei rounds. Training eseguito su round infiniti ma reward shaping eseguito per rendere piu'  
+aggressivi i players.  
+
+Struttura attuale modello:  
+- **Self-play PPO deep residual MLP teacher** su vectorized features da IKEMEN internal memory.  
+- **Self-play PPO Vision CNN student con distillation** su stack di frames. Implementando il metodo realizzato  
+in main da Davide.  
+ 
 
 ## State struct
 
