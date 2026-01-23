@@ -5,8 +5,36 @@ import (
 	"strings"
 )
 
-// Helper per premere/rilasciare tasti tramite il motore interno
-// Assumiamo che OnKeyPressed/OnKeyReleased siano disponibili nel package main
+// Codici Tasti GLFW (Standard per Ikemen/MUGEN)
+// Se P1 Verticale funziona, questi codici sono corretti.
+const (
+	// Player 1 Defaults
+	KEY_UP    = 265
+	KEY_DOWN  = 264
+	KEY_LEFT  = 263
+	KEY_RIGHT = 262
+	KEY_Z     = 90 // A
+	KEY_X     = 88 // B
+	KEY_C     = 67 // C
+	KEY_A     = 65 // X
+	KEY_S     = 83 // Y
+	KEY_D     = 68 // Z
+	KEY_ENTER = 257 // Start
+
+	// Player 2 Defaults
+	KEY_I     = 73 
+	KEY_K     = 75 
+	KEY_J     = 74 
+	KEY_L     = 76 
+	KEY_Q     = 81 
+	KEY_W     = 87 
+	KEY_E     = 69 
+	KEY_R     = 82 
+	KEY_T     = 84 
+	KEY_Y     = 89 
+	KEY_U     = 85 
+)
+
 func SimKey(key int, press bool) {
 	if press {
 		OnKeyPressed(Key(key), 0)
@@ -15,76 +43,75 @@ func SimKey(key int, press bool) {
 	}
 }
 
-// Questa funzione preme i tasti fisici giusti in base alla configurazione caricata
 func ApplyNetworkInput(action AgentAction, p1Facing float32, p2Facing float32) {
-	// Se sys.keyConfig è vuoto o non ha abbastanza giocatori, esci
-	if len(sys.keyConfig) < 2 {
-		return
-	}
-
-	// --- PLAYER 1 (Indice 0) ---
+	if len(sys.keyConfig) < 2 { return }
 	processPlayerInput(0, action.P1Move, action.P1Btn, p1Facing)
-
-	// --- PLAYER 2 (Indice 1) ---
 	processPlayerInput(1, action.P2Move, action.P2Btn, p2Facing)
 }
 
 func processPlayerInput(playerIdx int, move string, btn string, facing float32) {
-	// Ottieni la configurazione tasti per questo giocatore
-	// sys.keyConfig deve essere di tipo []*KeyConfig o []KeyConfig
-	cfg := sys.keyConfig[playerIdx]
+	// Definizione tasti
+	var kUp, kDown, kLeft, kRight, kA, kB, kC, kX, kY, kZ, kStart int
 
-	if move != "" || btn != "" {
-		fmt.Printf("Player%d <Move:%s,Button:%s>\n", playerIdx, move, btn)
+	if playerIdx == 0 {
+		kUp, kDown, kLeft, kRight = KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT
+		kA, kB, kC = KEY_Z, KEY_X, KEY_C
+		kX, kY, kZ = KEY_A, KEY_S, KEY_D
+		kStart = KEY_ENTER
+	} else {
+		kUp, kDown, kLeft, kRight = KEY_I, KEY_K, KEY_J, KEY_L
+		kA, kB, kC = KEY_Q, KEY_W, KEY_E
+		kX, kY, kZ = KEY_R, KEY_T, KEY_Y
+		kStart = KEY_U
 	}
 
-	// 1. Decodifica Movimento (Relativo -> Assoluto)
+	// --- 1. DECODIFICA MOVIMENTO ---
 	var up, down, left, right bool
 
-	// 1. Verticali (Assoluti)
-	if strings.Contains(move, "up") {
-		up = true
-	}
-	if strings.Contains(move, "down") {
-		down = true
-	}
+	// A. DIREZIONI ASSOLUTE (Se Python invia "up left", "right", ecc.)
+	// Usiamo Contains per catturare anche diagonali inviate come "up left"
+	if strings.Contains(move, "up") || strings.Contains(move, "U") { up = true }
+	if strings.Contains(move, "down") || strings.Contains(move, "D") { down = true }
+	
+	// Nota: controlliamo "left" minuscolo per evitare confusione con "L" di Player 2 tasto L se mai ci fosse ambiguità
+	if strings.Contains(move, "left") { left = true }
+	if strings.Contains(move, "right") { right = true }
+	
+	// Gestione codici brevi assoluti "L" e "R" (solo se stringa esatta o parte di diagonale nota)
+	if strings.Contains(move, "L") && !strings.Contains(move, "Left") { left = true }
+	if strings.Contains(move, "R") && !strings.Contains(move, "Right") { right = true }
 
-	// 2. Orizzontali (Relativi al Facing)
-	// Se invii "F" (o "DF"), capisce dove guardi e preme la freccia giusta
-	if strings.Contains(move, "forward") {
-		if facing > 0 {
-			right = true // Guarda a destra -> Premi Destra
-		} else {
-			left = true // Guarda a sinistra -> Premi Sinistra
+	// B. DIREZIONI RELATIVE (Se Python invia "F", "UF", "B", "DB")
+	// Fallback se non abbiamo già deciso L/R
+	if !left && !right {
+		// FIX: Usa Contains invece di == per catturare "UF", "DF"
+		isForward := strings.Contains(move, "F") || strings.Contains(move, "forward")
+		isBack := strings.Contains(move, "B") || strings.Contains(move, "back")
+
+		if isForward {
+			if facing > 0 { right = true } else { left = true }
+		} else if isBack {
+			if facing > 0 { left = true } else { right = true }
 		}
 	}
 
-	if strings.Contains(move, "back") {
-		if facing > 0 {
-			left = true // Guarda a destra -> Indietro è Sinistra
-		} else {
-			right = true // Guarda a sinistra -> Indietro è Destra
-		}
+	// --- DEBUG PRINT DIRETTO ---
+	// Decommenta questo se ancora non funziona per vedere cosa decide Go
+	if move != "" {
+		fmt.Printf("[P%d] In: '%s' (Fac:%.0f) -> U:%v D:%v L:%v R:%v\n", playerIdx, move, facing, up, down, left, right)
 	}
+	
+	// --- 2. ESECUZIONE ---
+	SimKey(kUp, up)
+	SimKey(kDown, down)
+	SimKey(kLeft, left)
+	SimKey(kRight, right)
 
-	// 2. Premi i Tasti Direzionali
-	// Qui usiamo i nomi corretti della tua struct KeyConfig (dU, dD, dL, dR)
-	SimKey(cfg.dU, up)
-	SimKey(cfg.dD, down)
-	SimKey(cfg.dL, left)
-	SimKey(cfg.dR, right)
-
-	// 3. Premi i Tasti Attacco
-	// Usiamo strings.Contains per permettere combo di tasti (es. btn="ab" per EX Move)
-	// Nota: Assicurati di aver importato "strings" in alto nel file.
-
-	SimKey(cfg.kA, strings.Contains(btn, "a"))
-	SimKey(cfg.kB, strings.Contains(btn, "b"))
-	SimKey(cfg.kC, strings.Contains(btn, "c"))
-
-	SimKey(cfg.kX, strings.Contains(btn, "x"))
-	SimKey(cfg.kY, strings.Contains(btn, "y"))
-	SimKey(cfg.kZ, strings.Contains(btn, "z"))
-
-	SimKey(cfg.kS, strings.Contains(btn, "s")) // Start
+	SimKey(kA, strings.Contains(btn, "a"))
+	SimKey(kB, strings.Contains(btn, "b"))
+	SimKey(kC, strings.Contains(btn, "c"))
+	SimKey(kX, strings.Contains(btn, "x"))
+	SimKey(kY, strings.Contains(btn, "y"))
+	SimKey(kZ, strings.Contains(btn, "z"))
+	SimKey(kStart, strings.Contains(btn, "s"))
 }

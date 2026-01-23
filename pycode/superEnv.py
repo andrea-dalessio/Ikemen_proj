@@ -122,6 +122,48 @@ class SuperEnvironment:
             dones.append(done)
         return rew_vector, dones
     
+    # Because the model compulsively sends attacks every frame (not very human-like and not well interpreted by the game),
+    # we implement frame skipping to reduce the frequency of actions. (Here it executes the same action skipping 4 frames).
+    # EDIT: Removing skipped frames but keeping the code as-is because the problem was in how the moving commands were parsed
+    # by the game scripts).
+    def step(self, actionsP1, actionsP2, skip=1):
+        total_rewards = np.zeros(self.count, dtype=np.float32)
+        final_dones = [False] * self.count
+        current_states = [None] * self.count
+        
+        # Loop Frame Skipping
+        for _ in range(skip):
+            # 1. Sends action to all envs
+            self.executeAction(actionsP1, actionsP2)
+            
+            # 2. Receives states (from all envs)
+            # Note: recieve returns (states_list, frames_array)
+            states, _ = self.recieve() 
+            
+            # 3. Process results for each environment
+            for i in range(self.count):
+                # If this env has already finished in a previous frame of the skip loop, ignore it
+                if final_dones[i]:
+                    continue
+                
+                # Calculate reward for the single frame
+                step_reward, step_done = self.envs[i].rewardCompute(states[i])
+                
+                # Accumulate rewards and update states
+                total_rewards[i] += step_reward
+                current_states[i] = states[i]
+                
+                # IMPORTANT: Update the previousState of the specific env
+                # Otherwise, in the next loop iteration, 'diff_hp' will be zero!
+                self.envs[i].previousState = states[i]
+                
+                if step_done:
+                    final_dones[i] = True
+        
+        # Returns the final state of the last frame (or the frame of match end)
+        # The visual 'frame' (pixels) is not needed for the teacher, so we return None or empty
+        return current_states, total_rewards, np.array(final_dones)    
+    
     def reset(self, index:int|None=None):
         if index is None:
             frames = []

@@ -34,6 +34,18 @@ class IkemenEnvironment:
         self.port = port
         self.log = open(f"{os.getcwd()}/logs/log_{self.port}.txt", 'w')
         self.instance = instance
+        self.keyMap = {
+            'U': 'up',
+            'D': 'down',
+            'L': 'left',
+            'R': 'right',
+            'UL': 'up left',    # O "7" (Numpad)
+            'UR': 'up right',   # O "9"
+            'DL': 'down left',  # O "1"
+            'DR': 'down right', # O "3"
+            '-': ''             # Neutro
+        }        
+        
         self.actionMapHit = {
             0: "-",
             1: "a",
@@ -44,7 +56,7 @@ class IkemenEnvironment:
             6: "xy"
         }
         
-        self.actionMapMove = {
+        self.move_intent = {
             0: "-",
             1: "F",
             2: "B",
@@ -56,7 +68,7 @@ class IkemenEnvironment:
             8: "DB"
         }        
         
-        self.action_space = (len(self.actionMapMove), len(self.actionMapHit))
+        self.action_space = (len(self.move_intent), len(self.actionMapHit))
         
         if training_mode == 'teacher':
             self.needFrame = False
@@ -364,15 +376,62 @@ class IkemenEnvironment:
         
         return nextState, frame
 
-    def executeAction(self, actionP1:tuple[int,int], actionP2:tuple[int,int]):
-        nextMove = {
-            "p1_move": self.actionMapMove[actionP1[0]], 
-            "p1_btn": self.actionMapHit[actionP1[1]], 
-            "p2_move": self.actionMapMove[actionP2[0]], 
-            "p2_btn": self.actionMapHit[actionP2[1]], 
+    # Rewritten because action detection was faulty (for movements)
+    def executeAction(self, actionP1, actionP2):
+        if not self.connected:
+            return
+
+        # Facing directions
+        p1_facing = 1
+        p2_facing = -1
+        
+        if self.previousState is not None:
+            p1_facing = self.previousState.get('p1_facing', 1)
+            p2_facing = self.previousState.get('p2_facing', -1)
+
+        # Helper function to get physical key from intent
+        def get_physical_key(intent_idx, facing):
+            intent = self.move_intent[int(intent_idx)]
+            
+            # Up or NO-MOVE
+            if intent in ["-", "U", "D"]:
+                return self.keyMap[intent]
+            
+            # Relative logic F/B
+            is_forward = 'F' in intent
+            is_back = 'B' in intent
+            
+            side_key = ""
+            if is_forward:
+                side_key = 'R' if facing == 1 else 'L'
+            elif is_back:
+                side_key = 'L' if facing == 1 else 'R'
+                
+            # Combination for diagonals (e.g., UF -> U + side_key)
+            final_key = ""
+            if 'U' in intent: final_key = 'U' + side_key # Es. UR
+            elif 'D' in intent: final_key = 'D' + side_key # Es. DR
+            else: final_key = side_key # Es. R
+            
+            return self.keyMap.get(final_key, "")
+
+        # Get physical keys for both players
+        move_str_p1 = get_physical_key(actionP1[0], p1_facing)
+        move_str_p2 = get_physical_key(actionP2[0], p2_facing)
+        
+        btn_str_p1 = self.actionMapHit[int(actionP1[1])]
+        btn_str_p2 = self.actionMapHit[int(actionP2[1])]
+        
+        # Build and send payload
+        payload = {
+            "p1_move": move_str_p1,
+            "p1_btn": btn_str_p1,
+            "p2_move": move_str_p2,
+            "p2_btn": btn_str_p2,
             "reset": False
         }
-        self.send(nextMove)
+        
+        self.send(payload)
 
     def reset(self):
         if self.socket is None or not self.connected:
