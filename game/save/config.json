@@ -104,7 +104,7 @@
   "RoundsNumSimul": 2,
   "RoundsNumSingle": 2,
   "RoundsNumTag": 2,
-  "RoundTime": 99,
+  "RoundTime": -1,
   "ScreenshotFolder": "",
   "StartStage": "stages/stage1.def",
   "StereoEffects": true,

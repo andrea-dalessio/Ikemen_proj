@@ -1,0 +1,5 @@
+external/script/main.lua:1428: cannot perform mul operation between nil and number
+stack traceback:
+	external/script/main.lua:1428: in function 'f_commandLine'
+	external/script/main.lua:1508: in main chunk
+	[G]: ?

@@ -56,7 +56,6 @@ class TeacherModel(nn.Module):
         else:
             self.env_number = 1 
         
-        # Now using an LSTM
         self.input_layer = nn.Linear(self.state_dim, 512)
         
         # Residual Blocks
@@ -346,7 +345,10 @@ class TeacherModel(nn.Module):
         batch_data = (flat_obs, flat_actions, flat_logprobs, flat_returns, flat_advantages, flat_values)
         
         # Calculate Win Rate
-        win_rate = batch_wins / batch_matches if batch_matches > 0 else 0.0
+        if batch_matches > 0:
+            win_rate = batch_wins / batch_matches
+        else:
+            win_rate = None
         
         # Return next_obs (in numpy format) to maintain continuity in the main loop
         return batch_data, next_obs_numpy, win_rate, False
@@ -467,11 +469,7 @@ class TeacherModel(nn.Module):
         for update in range(1, total_updates + 1):
             
             # A. RACCOLTA DATI
-            batch_data, next_obs, win_rate, crash_occurred = self.runEpisode(
-                last_obs, 
-                self.rollout_steps, 
-                opponent_model
-            )
+            batch_data, next_obs, win_rate, crash_occurred = self.runEpisode(last_obs, self.configs['teacherModel']['rollout_steps'], opponent_model)
             
             if crash_occurred or batch_data is None:
                 print(f"Update {update}: Skipping update due to crash (crash_occurred={crash_occurred}) or lack of data. Resyncing...")
@@ -490,8 +488,13 @@ class TeacherModel(nn.Module):
             global_step += self.rollout_steps
             
             # Tracking
-            win_rate_history.append(win_rate)
-            avg_win_rate = sum(win_rate_history) / len(win_rate_history) if len(win_rate_history) > 0 else 0.0
+            if win_rate is not None:
+                win_rate_history.append(win_rate)
+                
+            if len(win_rate_history) > 0:
+                avg_win_rate = sum(win_rate_history) / len(win_rate_history)
+            else:
+                avg_win_rate = 0.0
             
             # B. UPDATE PPO (LEARNER)
             last_obs = self.ppo_update(self, optimizer, batch_data, last_obs)
@@ -501,8 +504,8 @@ class TeacherModel(nn.Module):
             print(f"Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC
-            # Se il learner vince > 60% delle volte, diventa il nuovo maestro
-            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
+            # Se il learner vince > 80% delle volte, diventa il nuovo maestro
+            if avg_win_rate > 0.80 and len(win_rate_history) == 5:
                 print("🚀 UPGRADE: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()

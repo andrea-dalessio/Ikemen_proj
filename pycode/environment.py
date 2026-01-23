@@ -143,8 +143,8 @@ class IkemenEnvironment:
             raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
         portNumber = str(self.port) # Adjust as needed  
-        # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', 'time', '-1', '-port', portNumber] # Set to infinite time per round
-        launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', 'time', '-1', '-port', portNumber] # Set to infinite time per round
+        # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
+        launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
         print(f"[{self.instance}] Launching IkemenGO...")
         
         try:
@@ -218,37 +218,75 @@ class IkemenEnvironment:
             raise ConnectionError(f"[{self.instance}] Broken Pipe during send (Server closed connection).")
     
     def rewardCompute(self, state):
+        current_tick = state.get('tick', 0)
+        relative_tick = current_tick - self.round_start_tick
+        
+        # Warm-up (ignora primi frame)
+        if relative_tick < 60:
+            return 0.0, False
+
         done = False
         reward = 0.0
-        MAX_LIFE = state.get('p1_life_max', 1000)
         
-        # Termination condition (Game win or loss). Trying to remove timeout conditions to stabilize environment behavior
-        if state['p1_hp'] <= 0 or state['p2_hp'] <= 0:
+        MAX_LIFE = float(state.get('p1_life_max', 1000))
+        p1_hp = state.get('p1_hp', 0)
+        p2_hp = state.get('p2_hp', 0)
+        
+        # Fine Match
+        if p1_hp <= 0 or p2_hp <= 0:
             done = True
         
-        # Damage based reward
         if self.previousState is not None:
-            # Damage calc (assuming hp can only decrease)
-            diff_p1_hp = self.previousState['p1_hp'] - state['p1_hp']
-            diff_p2_hp = self.previousState['p2_hp'] - state['p2_hp']
+            # --- 1. HEALTH REWARD (Invariato, buono) ---
+            # Premia molto il danno fatto, punisce metà il danno subito.
+            # Questo incoraggia il "trading" aggressivo.
+            diff_p2 = self.previousState['p2_hp'] - p2_hp
+            diff_p1 = self.previousState['p1_hp'] - p1_hp
+            if diff_p2 < 0: diff_p2 = 0
+            if diff_p1 < 0: diff_p1 = 0
             
-            # NORMALIZED reward (we were getting negative trillion reward scores because with resets the hp diff counted also the +1000 refill)
-            reward += (diff_p2_hp / MAX_LIFE) * 10.0  # Reward for damage dealt
-            reward -= (diff_p1_hp / MAX_LIFE) * 5.0   # Penalty for damage taken
+            reward += (diff_p2 / MAX_LIFE) * 20.0  # AUMENTATO: Enfatizza il danno puro
+            reward -= (diff_p1 / MAX_LIFE) * 10.0   
+            
+            # --- 2. NUOVO: CLOSING IN REWARD (Invece della Distance Penalty) ---
+            # Se ti avvicini, ti do un biscottino. Se ti allontani, niente (o piccolo malus).
+            # Questo insegna a "cacciare" l'avversario invece di scappare.
+            prev_dist = abs(self.previousState.get('p1_x',0) - self.previousState.get('p2_x',0))
+            curr_dist = abs(state.get('p1_x',0) - state.get('p2_x',0))
+            
+            # Se la distanza è diminuita (ti sei avvicinato), reward positivo!
+            if curr_dist < prev_dist:
+                reward += 0.002 
+            
+            # --- 3. RIMOSSO STEP PENALTY ---
+            # reward -= 0.001  <-- RIMOSSO. Non punire l'esistenza per ora.
+            
+            # --- 4. FIRST HIT BONUS (Incoraggia l'iniziativa) ---
+            # Se hai fatto danno in questo frame, piccolo bonus extra
+            if diff_p2 > 0:
+                reward += 0.5 
 
-            # ----REWARD SHAPING----
-            # 1. Retreat penalty (if you stay too far away from opponent, you get a small penalty (like GGST tension system))
-            distance = abs(state['p2_x'] - state['p1_x'])
-            if distance > 200:
-                reward -= 0.0005  # Be aggressive!
+            # --- 5. WIN/LOSS MASSICCI ---
+        if done:
+            # Calcoliamo quanto è durato il match per il log
+            match_len = relative_tick 
+            
+            # CASO 1: VITTORIA P1 (Teacher)
+            if p1_hp > 0 and p2_hp <= 0:
+                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                reward += 10.0 
                 
-            # 2. Stalling penalty (No time limits in training, so penalties for staying too idle or bonuses for quick finishes are needed)
-            reward -= 0.001  # Small penalty each frame to encourage finishing the match quickly
-
-        # First frame fallback
-        if self.previousState is None:
-            reward = 0
-
+            # CASO 2: SCONFITTA P1 (Vittoria Opponent)
+            elif p1_hp <= 0 and p2_hp > 0:
+                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                reward -= 5.0 
+                
+            # CASO 3: DOPPIO KO (Pareggio)
+            elif p1_hp <= 0 and p2_hp <= 0:
+                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                # Un pareggio è meglio di una sconfitta, ma peggio di una vittoria
+                reward -= 1.0
+                    
         return reward, done
 
     def normalize_anim_smart(self, anim_no):
