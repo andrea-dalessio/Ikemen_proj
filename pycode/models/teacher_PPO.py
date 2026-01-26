@@ -264,20 +264,23 @@ class TeacherModel(nn.Module):
                 # --- 2. PREPARAZIONE AZIONI ---
                 act_p1 = a1.cpu().numpy()
                 act_p2 = a2.cpu().numpy()
-                
-                # --- 3. INTERAZIONE ENV (Action Repeat/Skipping frames) ---
-                # It's much more gym like! Moved all the "executeAction" and "recieve" logic inside env.step()
+
+                # --- 3. INTERAZIONE ENV (Manuale) ---
+                # A. Invia azioni
                 try:
-                    raw_next_state, rewards_np, dones_np = self.env.step(act_p1, act_p2, skip=4)
-                    if any(s is None for s in raw_next_state):
-                        print("Errore: Stato nullo ricevuto dall'env. Interrompo rollout.")
+                    self.env.executeAction(act_p1, act_p2)
+                    raw_next_state, _ = self.env.recieve()
                 except Exception as e:
                     print(f"Errore invio azioni: {e}. Interrompo rollout.")
                     crash_occurred = True
                     break
 
-                rewards = torch.tensor(rewards_np, dtype=torch.float32, device=self.device)
-                dones = torch.tensor(dones_np, dtype=torch.float32, device=self.device)      
+                # C. Calcola Reward e Done
+                # Nota: rewardCompute usa env.previousState. Dobbiamo assicurarci che sia settato.
+                # Se env.recieve non aggiorna env.previousState, lo facciamo noi alla fine del ciclo.
+                rewards, dones = self.env.rewardCompute(raw_next_state)
+                rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
+                dones = torch.tensor(dones, dtype=torch.float32, device=self.device)      
                 
                 # --- 4. SALVATAGGIO DATI ---
                 b_obs.append(obs_tensor)
@@ -304,6 +307,9 @@ class TeacherModel(nn.Module):
                             break
                         normedState = self.env.normalizeState(raw_reset_state, i)
                         obs_tensor[i] = torch.tensor(normedState, dtype=torch.float32, device=self.device)
+                    else:
+                        # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
+                        self.env.previousState = raw_next_state
 
                 # Aggiorniamo il tensore corrente per il prossimo step
             

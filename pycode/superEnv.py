@@ -35,50 +35,6 @@ class SuperEnvironment:
     def action_space(self):
         return self.envs[0].action_space
     
-    def step(self, actionsP1, actionsP2, skip=4):
-        """
-        Esegue l'azione per 'skip' frames su tutti gli environment Sincronamente.
-        """
-        # Inizializza accumulatori
-        total_rewards = np.zeros(self.count, dtype=np.float32)
-        final_dones = np.array([False] * self.count)
-        current_states = [None] * self.count
-        
-        # Loop del Frame Skipping (es. 4 volte)
-        for _ in range(skip):
-            # 1. Invia Azioni a TUTTI
-            self.executeAction(actionsP1, actionsP2)
-            
-            # 2. Ricevi Stati da TUTTI (Bloccante/Sincrono)
-            states, _ = self.recieve() 
-            
-            # 3. Elabora risultati per ogni environment
-            for i in range(self.count):
-                # Se questo env è già finito in un frame precedente del ciclo skip, ignoralo
-                if final_dones[i]:
-                    continue
-                
-                # Gestione crash (stato None)
-                if states[i] is None:
-                    final_dones[i] = True
-                    continue
-                
-                # Calcola reward del singolo frame
-                step_reward, step_done = self.envs[i].rewardCompute(states[i])
-                
-                # Accumula
-                total_rewards[i] += step_reward
-                current_states[i] = states[i]
-                
-                # IMPORTANTE: Aggiorna previousState dell'env specifico
-                # Altrimenti al prossimo giro del loop 'diff_hp' sarà zero!
-                self.envs[i].previousState = states[i]
-                
-                if step_done:
-                    final_dones[i] = True
-        
-        return current_states, total_rewards, final_dones    
-    
     def start(self):
         print(f"Launching and connecting to {self.count} environments...")
         for e in self.envs:
