@@ -25,7 +25,7 @@ else:
 # --- Teacher Training Mode ---
 if args.teacherTrain:
     env = SuperEnvironment(training_mode="teacher")
-    model = TeacherModel(env)
+    model = TeacherModel(env, load_checkpoint=True)
     try:
         model.trainPPO()
     finally:

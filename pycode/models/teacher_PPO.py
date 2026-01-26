@@ -6,6 +6,8 @@ import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from pandas import DataFrame
+import csv
 
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
@@ -21,7 +23,7 @@ class ResidualBlock(nn.Module):
         return F.relu(self.ln(self.fc(x))) + x
 
 class TeacherModel(nn.Module):
-    def __init__(self, env, configs):
+    def __init__(self, env, configs, load_checkpoint=False):
         super().__init__()
         if torch.cuda.is_available():
             self.device = torch.device('cuda:0')
@@ -33,6 +35,7 @@ class TeacherModel(nn.Module):
         
         self.configs = configs
         self.saveName = f'{os.getcwd()}/models_saves/teacher_model.pt'
+        self.loggingPath = f'{os.getcwd()}/logs/teacher_model_training_logs.csv'
         
         self.gamma = configs['general']['gamma']
         self.gae_lambda = configs['general']['gae_lambda']
@@ -72,6 +75,11 @@ class TeacherModel(nn.Module):
                
         self.to(self.device)
         
+        if load_checkpoint and Path(self.saveName).is_file():
+            self.load()
+            print("Loaded Teacher Model from checkpoint.")
+        else:
+            print("Initialized new Teacher Model.")
         
     def make_copy(self):
         model = TeacherModel(self.env, self.configs)
@@ -149,7 +157,7 @@ class TeacherModel(nn.Module):
                     last_obs = self.keep_alive(last_obs)
                     last_ping_time = time.time()
         
-        return last_obs # Return updated last_obs after keep-alive
+        return last_obs, value_loss.item() # Return updated last_obs after keep-alive
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
@@ -298,8 +306,12 @@ class TeacherModel(nn.Module):
                 for i, done in enumerate(dones):
                     if done:
                         batch_matches += 1
-                        if rewards[i] > 0: 
-                            batch_wins += 1 # Assumendo reward positivo per vittoria
+                        env_state = raw_next_state[i]
+                        if env_state is not None:
+                            p1_hp = env_state.get('p1_hp', 0)
+                            p2_hp = env_state.get('p2_hp', 0)
+                            if p1_hp > p2_hp: 
+                                batch_wins += 1
                         try:
                             raw_reset_state, _ = self.env.reset(i)
                         except Exception as e:
@@ -399,12 +411,12 @@ class TeacherModel(nn.Module):
         flipped[..., 1] = obs[..., 0]
         
         # Absolute X
-        flipped[..., 4] = obs[..., 5]
-        flipped[..., 5] = obs[..., 4]
+        flipped[..., 4] = 1.0 - obs[..., 5]
+        flipped[..., 5] = 1.0 - obs[..., 4]
         
         # Facing
-        flipped[..., 6] = obs[..., 7]
-        flipped[..., 7] = obs[..., 6]
+        flipped[..., 6] = -obs[..., 7]
+        flipped[..., 7] = -obs[..., 6]
         
         # Power
         flipped[..., 8] = obs[..., 9]
@@ -425,9 +437,12 @@ class TeacherModel(nn.Module):
         
         # Added just now: speeds! The model isn't an RNN so to "Markovize" the state we add speeds as input features
         flipped[..., 13] = -obs[..., 15]  # p2_dx flipped to p1_dx
-        flipped[..., 14] = -obs[..., 16]  # p2_dy flipped to p1_dy
+        flipped[..., 14] = obs[..., 16]  # p2_dy flipped to p1_dy
         flipped[..., 15] = -obs[..., 13]  # p1_dx flipped to p2_dx
-        flipped[..., 16] = -obs[..., 14]  # p1_dy flipped to p2_dy
+        flipped[..., 16] = obs[..., 14]  # p1_dy flipped to p2_dy
+        
+        flipped[..., 17] = obs[..., 18]  # p1_y
+        flipped[..., 18] = obs[..., 17]  # p2_y
         
         return flipped    
     
@@ -497,15 +512,15 @@ class TeacherModel(nn.Module):
                 avg_win_rate = 0.0
             
             # B. UPDATE PPO (LEARNER)
-            last_obs = self.ppo_update(self, optimizer, batch_data, last_obs)
+            last_obs, valueloss = self.ppo_update(self, optimizer, batch_data, last_obs)
             
             # C. LOGGING
             avg_return = batch_data[3].mean().item()
             print(f"Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC
-            # Se il learner vince > 80% delle volte, diventa il nuovo maestro
-            if avg_win_rate > 0.80 and len(win_rate_history) == 5:
+            # Se il learner vince > 60% delle volte, diventa il nuovo maestro
+            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
                 print("🚀 UPGRADE: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()
@@ -514,6 +529,17 @@ class TeacherModel(nn.Module):
             if update % 10 == 0:
                 self.save()
                 print(f"Checkpoint saved at update {update}")
+                
+            # F. LOG TO CSV
+            log_data = {
+                'update': update,
+                'steps': global_step,
+                'avg_return': avg_return,
+                'win_rate': avg_win_rate,
+                'value_loss': valueloss
+            }
+            df = DataFrame([log_data])
+            df.to_csv(self.loggingPath, mode='a', header=not Path(self.loggingPath).is_file(), index=False)
 
         print("Training completed.")
         self.env.close_game()

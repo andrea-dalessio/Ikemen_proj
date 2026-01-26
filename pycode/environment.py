@@ -72,7 +72,7 @@ class IkemenEnvironment:
         
         if training_mode == 'teacher':
             self.needFrame = False
-            self.observation_space = (17,)
+            self.observation_space = (19,)
         elif training_mode == 'student':
             self.needFrame = True
             self.observation_space = (CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number'])
@@ -257,8 +257,8 @@ class IkemenEnvironment:
             if diff_p2 < 0: diff_p2 = 0
             if diff_p1 < 0: diff_p1 = 0
             
-            reward += (diff_p2 / MAX_LIFE) * 20.0  # AUMENTATO: Enfatizza il danno puro
-            reward -= (diff_p1 / MAX_LIFE) * 10.0   
+            reward += (diff_p2 / MAX_LIFE) * 3.0
+            reward -= (diff_p1 / MAX_LIFE) * 4.0   
             
             # --- 2. NUOVO: CLOSING IN REWARD (Invece della Distance Penalty) ---
             # Se ti avvicini, ti do un biscottino. Se ti allontani, niente (o piccolo malus).
@@ -266,19 +266,38 @@ class IkemenEnvironment:
             prev_dist = abs(self.previousState.get('p1_x',0) - self.previousState.get('p2_x',0))
             curr_dist = abs(state.get('p1_x',0) - state.get('p2_x',0))
             
-            # Se la distanza è diminuita (ti sei avvicinato), reward positivo!
+            # Tieni la pressione. Tension up!
             if curr_dist < prev_dist:
                 reward += 0.002 
             
-            # --- 3. RIMOSSO STEP PENALTY ---
-            # reward -= 0.001  <-- RIMOSSO. Non punire l'esistenza per ora.
+            elif curr_dist > prev_dist:
+                retreat_pen = 0.005 # Se ti arretri, negative penalty!
+                p1_x = state.get('p1_x',0)
+                p1_facing = state.get('p1_facing',1)
+                if ((p1_x < -900) and (p1_facing == 1)) or ((p1_x > 900) and (p1_facing == -1)):  # Backed up into corner penalty
+                    retreat_pen *= 4.0
+                
+                if ((p1_x < -900) and (p1_facing == -1)) or ((p1_x > 900) and (p1_facing == 1)):  # Pressuring into corner bonus
+                    retreat_pen *= 0.2
+                
+                if p1_hp > p2_hp:
+                    retreat_pen *= 1.5  # Più punizione se sei in vantaggio
+                    
+                reward -= retreat_pen
             
-            # --- 4. FIRST HIT BONUS (Incoraggia l'iniziativa) ---
-            # Se hai fatto danno in questo frame, piccolo bonus extra
-            if diff_p2 > 0:
-                reward += 0.5 
-
-            # --- 5. WIN/LOSS MASSICCI ---
+            animno = state.get('p1_anim_no', 0)
+            if 200 <= animno <= 800 and curr_dist > 150.0:
+                reward -= 0.005
+                
+            
+            # --- 3. DYNAMIC SLOW PLAY PENALTY ---
+            FIGHT_RANGE = 180.0
+            if curr_dist > FIGHT_RANGE:
+                reward -= 0.002
+            else:
+                reward -= 0.0005  # Penalità minore se sei in range di combattimento
+            
+            # --- 4. WIN/LOSS MASSICCI ---
         if done:
             # Calcoliamo quanto è durato il match per il log
             match_len = relative_tick 
@@ -286,12 +305,12 @@ class IkemenEnvironment:
             # CASO 1: VITTORIA P1 (Teacher)
             if p1_hp > 0 and p2_hp <= 0:
                 print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
-                reward += 10.0 
+                reward += 5.0 
                 
             # CASO 2: SCONFITTA P1 (Vittoria Opponent)
             elif p1_hp <= 0 and p2_hp > 0:
                 print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
-                reward -= 5.0 
+                reward -= 2.0 
                 
             # CASO 3: DOPPIO KO (Pareggio)
             elif p1_hp <= 0 and p2_hp <= 0:
@@ -347,12 +366,14 @@ class IkemenEnvironment:
             (p2_x + 1000.0) / 2000.0,
             state.get('p1_facing', 1),  # Facing direction (1 or -1)
             state.get('p2_facing', 1),
-            state.get('p1_power', 0) / 100.0,
-            state.get('p2_power', 0) / 100.0,
+            state.get('p1_power', 0) / 3000.0,
+            state.get('p2_power', 0) / 3000.0,
             self.normalize_anim_smart(state.get('p1_anim_no', 0)),
             self.normalize_anim_smart(state.get('p2_anim_no', 0)),
             time_feat,
-            p1_dx, p1_dy, p2_dx, p2_dy
+            p1_dx, p1_dy, p2_dx, p2_dy,
+            state.get('p1_y', 0) / -200.0,   # Normalized position on max stage height
+            state.get('p2_y', 0) / -200.0  # Normalized position on max stage height            
             ], 
             dtype=np.float32
         )
