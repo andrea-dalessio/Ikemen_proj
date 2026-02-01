@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -116,12 +117,31 @@ func readAction(conn net.Conn) (AgentAction, error) {
 	return action, err
 }
 
+func writeAll(conn net.Conn, data []byte, description string) error {
+	n, err := conn.Write(data)
+	if err != nil {
+		return fmt.Errorf("[Sync] failed to write %s (%d/%d bytes): %w\n", description, n, len(data), err)
+	}
+	if n != len(data) {
+		return fmt.Errorf("[Sync] partial write %s (%d/%d bytes)\n", description, n, len(data))
+	}
+	log.Printf("[Sync] %s write successful (%d bytes)\n", description, n)
+	return nil
+}
+
+func uint32ToBytes(n uint32) []byte {
+	buf := make([]byte, 4)
+	binary.BigEndian.PutUint32(buf, n)
+	return buf
+}
+
 func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 	mu.Lock()
 	defer mu.Unlock()
 
-	fmt.Println("Sync with python")
+	log.Printf("[Sync] Start sync with python Frame: %dx%d, State Tick=%d\n", w, h, state.GameTick)
 	if !IsConnected || conn == nil {
+		log.Println("[Sync] Connection failed")
 		return AgentAction{}
 	}
 
@@ -136,38 +156,35 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 
 	stateJSON, err := json.Marshal(msg)
 	if err != nil {
+		log.Println("[Sync] failed to marshal state: ", err)
 		return AgentAction{}
 	}
 	fmt.Println("Set Write Deadline")
 	conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 
 	// ---- SEND STATE ----
-	fmt.Println("First write")
-	if err := writeU32(conn, uint32(len(stateJSON))); err != nil {
+
+	if err := writeAll(conn, uint32ToBytes(uint32(len(stateJSON))), "state length"); err != nil {
 		return disconnect()
 	}
-	fmt.Println("Second write")
-	if _, err := conn.Write(stateJSON); err != nil {
+	if err := writeAll(conn, stateJSON, "state JSON"); err != nil {
 		return disconnect()
 	}
 
-	// ---- SEND IMAGE ----
-	fmt.Println("Third write")
-	if err := writeU32(conn, uint32(len(frame))); err != nil {
+	if err := writeAll(conn, uint32ToBytes(uint32(len(frame))), "frame length"); err != nil {
 		return disconnect()
 	}
-	fmt.Println("Fourth write")
-	if _, err := conn.Write(frame); err != nil {
+	if err := writeAll(conn, frame, "frame data"); err != nil {
 		return disconnect()
 	}
 
 	// ---- READ ACTION ----
-	fmt.Println("Read")
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	action, err = readAction(conn)
 	if err != nil {
+		log.Printf("[Sync] Failed to read action: %v\n", err)
 		return disconnect()
 	}
-
+	log.Printf("[Sync] Successfully synced. Received action: %+v", action)
 	return action
 }
