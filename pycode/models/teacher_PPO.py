@@ -34,8 +34,9 @@ class TeacherModel(nn.Module):
             print(f"Using device: cpu")
         
         self.configs = configs
-        self.saveName = f'{os.getcwd()}/models_saves/teacher_model.pt'
-        self.loggingPath = f'{os.getcwd()}/logs/teacher_model_training_logs.csv'
+        self.namespace = configs['studentModel']['namespace']
+        self.saveName = f'{os.getcwd()}/models_saves/{self.namespace}.pt'
+        self.loggingPath = f'{os.getcwd()}/logs/{self.namespace}_training_logs.csv'
         
         self.gamma = configs['general']['gamma']
         self.gae_lambda = configs['general']['gae_lambda']
@@ -72,7 +73,7 @@ class TeacherModel(nn.Module):
         self.movePolicy = nn.Linear(256, self.actionsMove)
         self.hitPolicy = nn.Linear(256, self.actionsHit)
         self.valueEstimator = nn.Linear(256, 1)
-               
+
         self.to(self.device)
         
         if load_checkpoint and Path(self.saveName).is_file():
