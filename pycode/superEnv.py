@@ -59,8 +59,8 @@ class SuperEnvironment:
     def wait_for_match_start(self, timeout=60):
         print("Parallel handshaking with environments...")
         start_time = time.time()
-        results = [None] * self.count # Results from games
-        synced_mask = [False] * self.count # Is the round over?
+        results = [None for _ in range(self.count)]  # Results from games
+        synced_mask = [False for _ in range(self.count)] # Is the round over?
         
         while not all(synced_mask):
             if time.time() - start_time > timeout:
@@ -154,3 +154,17 @@ class SuperEnvironment:
         else:
             statesNormalized = self.envs[index].normalizeState(state)
             return np.array(statesNormalized)
+        
+    def setPreviousState(self, state):
+        for i in range(self.count):
+            self.envs[i].previousState = state[i]
+    
+    @property
+    def hasPreviousState(self):
+        for i in range(self.count):
+            if self.envs[i].previousState is None:
+                return False
+        return True
+    
+    def getPreviousState(self):
+        return [self.envs[i].previousState for i in range(self.count)]

@@ -69,7 +69,7 @@ class IkemenEnvironment:
         }        
         
         self.action_space = (len(self.move_intent), len(self.actionMapHit))
-        
+        self.time_limit = CONFIGS['env']['trunk_ticks']
         if training_mode == 'teacher':
             self.needFrame = False
             self.observation_space = (19,)
@@ -237,7 +237,8 @@ class IkemenEnvironment:
         if relative_tick < 60:
             return 0.0, False
 
-        done = False
+        terminated = False
+        truncated = False
         reward = 0.0
         
         MAX_LIFE = float(state.get('p1_life_max', 1000))
@@ -246,7 +247,13 @@ class IkemenEnvironment:
         
         # Fine Match
         if p1_hp <= 0 or p2_hp <= 0:
-            done = True
+            print(f"[{self.instance}] Fighter KO")
+            terminated = True
+        elif relative_tick > self.time_limit:
+            print(f"[{self.instance}] Time over")
+            truncated = True
+        
+        done = terminated or truncated
         
         if self.previousState is not None:
             # --- 1. HEALTH REWARD (Invariato, buono) ---
@@ -304,20 +311,19 @@ class IkemenEnvironment:
             
             # CASO 1: VITTORIA P1 (Teacher)
             if p1_hp > 0 and p2_hp <= 0:
-                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
                 reward += 5.0 
                 
             # CASO 2: SCONFITTA P1 (Vittoria Opponent)
             elif p1_hp <= 0 and p2_hp > 0:
-                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
                 reward -= 2.0 
                 
             # CASO 3: DOPPIO KO (Pareggio)
-            elif p1_hp <= 0 and p2_hp <= 0:
-                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+            elif (p1_hp <= 0 and p2_hp <= 0) or truncated:
+                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
                 # Un pareggio è meglio di una sconfitta, ma peggio di una vittoria
                 reward -= 1.0
-                    
         return reward, done
 
     def normalize_anim_smart(self, anim_no):
@@ -386,6 +392,7 @@ class IkemenEnvironment:
         
         nextState = raw['state']
         
+        
         img_size = struct.unpack('>I', self.recieveHelper(4))[0]
         img = self.recieveHelper(img_size)
         
@@ -394,6 +401,9 @@ class IkemenEnvironment:
             w = raw["frame_w"]
             h = raw["frame_h"]
             frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
+        flip = nextState.get("p1_facing", 1) == -1
+        if flip:
+            frame = np.flip(frame, axis=1).copy()
         
         return nextState, frame
 
