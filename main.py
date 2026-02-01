@@ -23,11 +23,11 @@ if 'models_saves' not in dirList:
 else:
     print("Saves dirctory OK")
 
-envNum = args.n if args.n is not None else 4
-print("Selected {} environments".format(envNum))
+envNum = int(args.n) if args.n is not None else 4
+print("Selected {} environment(s)".format(envNum))
 if args.teacherTrain:
     env = SuperEnvironment(training_mode="teacher", environment_number=envNum)
-    model = TeacherModel(env, load_checkpoint=True)
+    model = StudentModel(env, load_checkpoint=True)
     try:
         model.trainPPO()
     finally:
@@ -35,9 +35,13 @@ if args.teacherTrain:
         env.close_game()
     
 elif args.studentTrain:
-    env = IkemenEnvironment(training_mode="student", port=8080)
+    env = SuperEnvironment(training_mode="student", environment_number=envNum)
     model = StudentModel(env)
-    ...
+    try:
+        model.trainPPO()
+    finally:
+        env.disconnect()
+        env.close_game()
     
 elif args.eval:
     env = IkemenEnvironment(training_mode="student", port=8080)
