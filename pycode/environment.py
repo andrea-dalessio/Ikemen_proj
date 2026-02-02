@@ -22,6 +22,7 @@ with open(configsPath, 'r') as configsFile:
     #     "p2_move": "",  # Player 2 fermo
     #     "p2_btn": "", 
     #     "reset": False
+    #     "end": False
     # }
 
 class IkemenEnvironment:
@@ -34,6 +35,8 @@ class IkemenEnvironment:
         self.port = port
         self.log = open(f"{os.getcwd()}/logs/log_{self.port}.txt", 'w')
         self.instance = instance
+        self.cycle_number = 0
+        
         self.keyMap = {
             'U': 'up',
             'D': 'down',
@@ -70,12 +73,12 @@ class IkemenEnvironment:
         
         self.action_space = (len(self.move_intent), len(self.actionMapHit))
         self.time_limit = CONFIGS['env']['trunk_ticks']
+        self.state_space = (19,)
+        self.observation_space = (CONFIGS['env']['channel_number'], CONFIGS['env']['window_height'], CONFIGS['env']['window_width'])
         if training_mode == 'teacher':
             self.needFrame = False
-            self.observation_space = (19,)
         elif training_mode == 'student':
             self.needFrame = True
-            self.observation_space = (CONFIGS['env']['window_height'], CONFIGS['env']['window_width'], CONFIGS['env']['stack_size'] * CONFIGS['env']['channel_number'])
         else:
             raise ValueError(f"[{self.instance}] Invalid training mode. Choose 'teacher' or 'student'.")
         
@@ -170,6 +173,7 @@ class IkemenEnvironment:
     def disconnect(self):
         if self.socket is not None:
             try:
+                self.send({'reset':True})
                 self.socket.shutdown(socket.SHUT_RDWR)
             except (OSError, Exception):
                 pass
@@ -232,6 +236,7 @@ class IkemenEnvironment:
     def rewardCompute(self, state):
         current_tick = state.get('tick', 0)
         relative_tick = current_tick - self.round_start_tick
+        self.cycle_number += 1
         
         # Warm-up (ignora primi frame)
         if relative_tick < 60:
@@ -249,7 +254,8 @@ class IkemenEnvironment:
         if p1_hp <= 0 or p2_hp <= 0:
             print(f"[{self.instance}] Fighter KO")
             terminated = True
-        elif relative_tick > self.time_limit:
+            
+        elif self.cycle_number > self.time_limit:
             print(f"[{self.instance}] Time over")
             truncated = True
         
@@ -459,7 +465,8 @@ class IkemenEnvironment:
             "p1_btn": btn_str_p1,
             "p2_move": move_str_p2,
             "p2_btn": btn_str_p2,
-            "reset": False
+            "reset": False,
+            "end": False
         }
         
         self.send(payload)
@@ -478,6 +485,7 @@ class IkemenEnvironment:
                 pass
             self.socket.setblocking(True)
             new_raw_state, new_frame = self.wait_for_match_start()
+            self.cycle_number = 0
             self.round_start_tick = new_raw_state.get('tick', 0)
             self.previousState = new_raw_state
             return new_raw_state, new_frame

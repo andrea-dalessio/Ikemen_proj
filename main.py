@@ -16,6 +16,8 @@ if 'logs' not in dirList:
     os.mkdir(f"{os.getcwd()}/logs")
     print("Log directory created")
 else:
+    for log in os.listdir(f"{os.getcwd()}/logs"):
+        os.remove(f"{os.getcwd()}/logs/{log}")
     print("Log dirctory OK")
 if 'models_saves' not in dirList:
     os.mkdir(f"{os.getcwd()}/models_saves")

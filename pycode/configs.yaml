@@ -9,7 +9,7 @@ env:
     host: 127.0.0.1
     max_retries: 15
     port: 8080
-    trunk_ticks: 10000
+    trunk_ticks: 20000
 
 general:
     lr: 1.0e-4
@@ -30,8 +30,8 @@ teacherModel:
     namespace: teacher_model 
 
 studentModel:
-    rollout_steps: 2048
-    minibatch_size: 1024
+    rollout_steps: 256
+    minibatch_size: 64
     update_epochs: 4
     num_envs: 4
     batch_size: 8192

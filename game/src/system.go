@@ -637,7 +637,9 @@ func (s *System) update() bool {
 				action.Reset,
 			)
 		}
-
+		if action.End {
+			s.shutdown()
+		}
 		if action.Reset {
 			fmt.Println("Reset flag set")
 			resetPending = true

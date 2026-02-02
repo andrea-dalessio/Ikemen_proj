@@ -29,11 +29,14 @@ class SuperEnvironment:
     
     @property
     def observation_space(self):
-        return self.envs[0].observation_space
+        return tuple([self.count] + [*self.envs[0].observation_space])
 
     @property
     def action_space(self):
-        return self.envs[0].action_space
+        return tuple([self.count] + [*self.envs[0].action_space])
+    @property
+    def state_space(self):
+        return tuple([self.count] + [*self.envs[0].state_space])
     
     def start(self):
         print(f"Launching and connecting to {self.count} environments...")
@@ -138,7 +141,6 @@ class SuperEnvironment:
             return state, np.array(frame)
         
     def hard_restart(self):
-        print("!!! HARD RESTART TRIGGERED !!!")
         self.close_game()
         time.sleep(2) # Pulizia risorse OS
         self.start() # Rilancia e riconnette

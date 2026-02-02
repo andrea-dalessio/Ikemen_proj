@@ -51,9 +51,10 @@ class TeacherModel(nn.Module):
         self.minibatch_size = configs['teacherModel']['minibatch_size']
         self.rollout_steps = configs['teacherModel']['rollout_steps']
         
-        self.state_dim = env.observation_space[0]
-        self.actionsMove = env.action_space[0]
-        self.actionsHit = env.action_space[1]
+        self.state_dim = env.state_space[1]
+        self.actionsMove = env.action_space[1]
+        self.actionsHit = env.action_space[2]
+        
         self.env = env
         if self.env.count is not None:
             self.env_number = self.env.count

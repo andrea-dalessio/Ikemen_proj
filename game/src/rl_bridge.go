@@ -43,6 +43,7 @@ type AgentAction struct {
 	P2Move string `json:"p2_move"`
 	P2Btn  string `json:"p2_btn"`
 	Reset  bool   `json:"reset"`
+	End    bool   `json:"end"`
 }
 
 var (
@@ -52,13 +53,6 @@ var (
 	IsConnected bool = false
 	netReader   *bufio.Reader
 )
-
-func writeU32(conn net.Conn, v uint32) error {
-	var buf [4]byte
-	binary.BigEndian.PutUint32(buf[:], v)
-	_, err := conn.Write(buf[:])
-	return err
-}
 
 func StartRLServer() {
 	port := ":" + sys.cmdFlags["-port"]

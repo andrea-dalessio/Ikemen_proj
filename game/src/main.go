@@ -50,8 +50,7 @@ func closeLog(f *os.File) {
 func main() {
 	os.Mkdir("save", os.ModeSticky|0755)
 	os.Mkdir("save/replays", os.ModeSticky|0755)
-
-	fmt.Println(os.Args)
+	
 	processCommandLine()
 	go StartRLServer()
 	// Make save directories, if they don't exist
