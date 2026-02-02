@@ -13,13 +13,13 @@ with open(configsPath, 'r') as configsFile:
     CONFIGS = yaml.safe_load(configsFile)
 
 class SuperEnvironment:
-    def __init__(self, training_mode:str, environment_number:int=4) -> None:
+    def __init__(self, training_mode:str, environment_number:int=4, headless=False) -> None:
         self.count = environment_number
         self.basePort = int(CONFIGS['env']['port'])
         self.envs:list[IkemenEnvironment] = []
-        
+        self.headless = headless
         for i in range(self.count):
-            env = IkemenEnvironment(training_mode, self.basePort+i, i)
+            env = IkemenEnvironment(training_mode, port=self.basePort+i, instance=i, headless=headless)
             self.envs.append(env)
             
         if training_mode == 'teacher':

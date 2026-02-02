@@ -27,7 +27,7 @@ with open(configsPath, 'r') as configsFile:
 
 class IkemenEnvironment:
     host = CONFIGS['env']['host']
-    def __init__(self, training_mode:str, port:int, instance:int=0):
+    def __init__(self, training_mode:str, port:int, instance:int=0, headless=False):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.max_retries = CONFIGS['env']['max_retries']
         self.connected = False
@@ -36,7 +36,7 @@ class IkemenEnvironment:
         self.log = open(f"{os.getcwd()}/logs/log_{self.port}.txt", 'w')
         self.instance = instance
         self.cycle_number = 0
-        
+        self.headless = headless
         self.keyMap = {
             'U': 'up',
             'D': 'down',
@@ -159,11 +159,16 @@ class IkemenEnvironment:
         
         portNumber = str(self.port) # Adjust as needed  
         # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
-        launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
+        env = os.environ.copy()
+        if self.headless:
+            env["SDL_AUDIODRIVER"] = "dummy"
+            launch_args = ["xvfb-run", "-s", "-screen 0 1280x720x24", str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
+        else:
+            launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
         print(f"[{self.instance}] Launching IkemenGO...")
         
         try:
-            self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=self.log, stderr=self.log)
+            self.game_process = subprocess.Popen(launch_args, cwd=os.path.dirname(game_path), stdout=self.log, stderr=self.log, env=env)
             print(f"[{self.instance}] Game launched, waiting for server...")
             time.sleep(1)
         except Exception as e:

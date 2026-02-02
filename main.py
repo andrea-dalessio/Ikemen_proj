@@ -7,8 +7,11 @@ parser.add_argument("-n", help="Chose how many environments to use", action="sto
 parser.add_argument('--teacherTrain', action='store_true', help='Run training with teacher model')
 parser.add_argument('--studentTrain', action='store_true', help='Run training with student model')
 parser.add_argument('--eval', action='store_true', help='Run evaluation with trained student model')
+parser.add_argument('--headless', action='store_true', help='Disable window')
 
 args = parser.parse_args()
+
+headless = args.headless
 
 dirList = os.listdir()
 
@@ -28,7 +31,7 @@ else:
 envNum = int(args.n) if args.n is not None else 4
 print("Selected {} environment(s)".format(envNum))
 if args.teacherTrain:
-    env = SuperEnvironment(training_mode="teacher", environment_number=envNum)
+    env = SuperEnvironment(training_mode="teacher", environment_number=envNum, headless=headless)
     model = StudentModel(env, load_checkpoint=True)
     try:
         model.trainPPO()
