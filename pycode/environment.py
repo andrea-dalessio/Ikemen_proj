@@ -158,7 +158,6 @@ class IkemenEnvironment:
             raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
         portNumber = str(self.port) # Adjust as needed  
-        # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
         env = os.environ.copy()
         if self.headless:
             print(f"[{self.instance}] Headless mode")
