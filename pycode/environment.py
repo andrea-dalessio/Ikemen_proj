@@ -161,9 +161,11 @@ class IkemenEnvironment:
         # launch_args = ['xvfb-run', '-a', str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
         env = os.environ.copy()
         if self.headless:
+            print(f"[{self.instance}] Headless mode")
             env["SDL_AUDIODRIVER"] = "dummy"
-            launch_args = ["xvfb-run", "-s", "-screen 0 1280x720x24", str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
+            launch_args = ["xvfb-run","-a", "-s", "-screen 0 1280x720x24", str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber]
         else:
+            print(f"[{self.instance}] Headed mode")
             launch_args = [str(game_path), '-p1', 'kfm', '-p2', 'kfm', '-ai', '0', '-port', portNumber] # Set to infinite time per round
         print(f"[{self.instance}] Launching IkemenGO...")
         

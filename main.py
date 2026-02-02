@@ -40,7 +40,7 @@ if args.teacherTrain:
         env.close_game()
     
 elif args.studentTrain:
-    env = SuperEnvironment(training_mode="student", environment_number=envNum)
+    env = SuperEnvironment(training_mode="student", environment_number=envNum, headless=headless)
     model = StudentModel(env)
     try:
         model.trainPPO()
