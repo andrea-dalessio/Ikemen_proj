@@ -15,6 +15,11 @@ from .teacher_PPO import TeacherModel
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
+def safe_print(*args, **kwargs):
+    tqdm.write(" ".join(map(str, args)), **kwargs)
+
+originalPrint = print
+
 def flip_frames(frames):
     if frames.dim() == 3:
         return torch.flip(frames, dims=[2])
@@ -23,12 +28,12 @@ def flip_frames(frames):
     else:
         raise ValueError("Invalid frame shape")
 
-def process_frame(frame_np):
+def process_frame(frame_uint):
     transform = T.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225]
     )
-    x = torch.from_numpy(frame_np).float()
+    x = frame_uint.float()
     x = x/255
     if x.dim() == 3:
         if x.shape[2] == 4:
@@ -198,7 +203,8 @@ class StudentModel(nn.Module):
         ping_interval = 2.0  # seconds
         
         # Ciclo di epoche
-        for _ in range(self.update_epochs):
+        builtins.print = safe_print
+        for _ in tqdm(range(self.update_epochs),desc="Consuming the batches"):
             indices = np.random.permutation(current_batch_size)
             
             for start in range(0, current_batch_size, self.minibatch_size):
@@ -208,7 +214,7 @@ class StudentModel(nn.Module):
 
                 # --- CODICE PPO STANDARD ---
                 actions_batch = b_actions[mb_idxs].to(self.device)
-                frames_batch = b_frames[mb_idxs].to(self.device) #TODO
+                frames_batch = process_frame(b_frames[mb_idxs]).to(self.device) #TODO
                 _, s_logp, entropy, new_values = self.get_action_and_value(frames_batch, actions_batch)
                 del frames_batch
                 with torch.no_grad():
@@ -224,21 +230,29 @@ class StudentModel(nn.Module):
                 logratio = s_logp - b_logprobs[mb_idxs]
                 ratio = logratio.exp()
                 mb_advantages = b_advantages[mb_idxs]
+                
                 if mb_advantages.std() > 1e-8:
                     mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                
                 pg_loss1 = -mb_advantages * ratio
                 pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                
                 policy_loss = torch.max(pg_loss1, pg_loss2).mean()
+                
                 value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
+                
                 ppo_loss = policy_loss - (self.entropy_coef * entropy.mean()) + (self.value_loss_coef * value_loss)
+                
                 distilation_loss = torch.sum(torch.exp(t_logp/temp) * (t_logp/temp - s_logp/temp),dim=-1)
+                
                 loss = ppo_loss + distilation_loss.mean()*(temp ** 2) * self.dist_coef
+                
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 optimizer.step()
                 # ---------------------------
-                
+        builtins.print = originalPrint
         return last_frame, last_state, value_loss.item() # Return updated last_obs after keep-alive
 
     def runEpisode(self, state, frame, rollout_steps, opponent_model):
@@ -257,7 +271,7 @@ class StudentModel(nn.Module):
         crash_occurred = False
         
         # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
-        frame_tensor = process_frame(frame) #TODO
+        frame_tensor = torch.tensor(frame, dtype=torch.uint8) 
         
         state_tensor = torch.tensor(state, dtype=torch.float32)
         if self.env_number == 1:
@@ -270,7 +284,7 @@ class StudentModel(nn.Module):
         with torch.no_grad():
             for i in tqdm(range(rollout_steps), desc="Episode rollout progres"):
                 
-                frame_tensor_gpu = frame_tensor.to(self.device)
+                frame_tensor_gpu = process_frame(frame_tensor).to(self.device)
                 a1, logp1, _, v1 = self.get_action_and_value(frame_tensor_gpu)
                 
                 opponent_screen = flip_frames(frame_tensor_gpu)
@@ -278,8 +292,8 @@ class StudentModel(nn.Module):
                 
                 del frame_tensor_gpu, opponent_screen
                 
-                act_p1 = a1.cpu().numpy().astype(int)
-                act_p2 = a2.cpu().numpy().astype(int)
+                act_p1 = a1.cpu().numpy()
+                act_p2 = a2.cpu().numpy()
 
                 try:
                     self.env.executeAction(act_p1, act_p2)
@@ -314,7 +328,7 @@ class StudentModel(nn.Module):
                 
                 next_state = self.env.normalizeState(raw_next_state)
                 state_tensor = torch.tensor(next_state, dtype=torch.float32)
-                frame_tensor = process_frame(next_frames)  #TODO fix
+                frame_tensor = torch.tensor(next_frames, dtype=torch.uint8)
                 # --- 5. GESTIONE FINE EPISODIO (RESET) ---
                 
                 for i, done in enumerate(dones):
@@ -333,14 +347,14 @@ class StudentModel(nn.Module):
                             break
                         normedState = self.env.normalizeState(raw_reset_state, i)
                         state_tensor[i] = torch.tensor(normedState, dtype=torch.float32)
-                        frame_tensor[i] = process_frame(reset_frames) #TODO fix
+                        frame_tensor[i] = torch.tensor(reset_frames, dtype=torch.uint8) #TODO fix
                     else:
                         # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
                         self.env.setPreviousState(raw_next_state)
 
                 # Aggiorniamo il tensore corrente per il prossimo step
             # --- 6. BOOTSTRAPPING (Valore finale) ---
-            frame_tensor_gpu = frame_tensor.to(self.device)
+            frame_tensor_gpu = process_frame(frame_tensor).to(self.device)
             _, _, _, next_value = self.get_action_and_value(frame_tensor_gpu)
             del frame_tensor_gpu
             
@@ -395,9 +409,6 @@ class StudentModel(nn.Module):
     def trainPPO(self):
         print(f"Start Self-Play Training on {self.device}")
         
-        def safe_print(*args, **kwargs):
-            tqdm.write(" ".join(map(str, args)), **kwargs)
-        
         # Opponent (Copia congelata)
         opponent_model = self.make_copy()
         opponent_model.to(self.device)
@@ -421,7 +432,6 @@ class StudentModel(nn.Module):
             #os.system('clear')
             print(f"[Master]> Update {update}: start episode")
             # A. RACCOLTA DATI
-            original_print = print
             
             try:
                 self.env.start()
@@ -440,7 +450,7 @@ class StudentModel(nn.Module):
                 builtins.print = safe_print
                 batch_data, next_frames, next_states, win_rate, _ = self.runEpisode(state, frame, self.configs['studentModel']['rollout_steps'], opponent_model)
             finally:
-                builtins.print = original_print
+                builtins.print = originalPrint
             
             self.env.close_game()
             
@@ -460,11 +470,15 @@ class StudentModel(nn.Module):
                 avg_win_rate = 0.0
             
             # B. UPDATE PPO (LEARNER)
+            print(f"[Master]> Coumputing PPO update")
             valueloss = self.ppo_update(optimizer, batch_data, last_state, last_frame)
             
             # C. LOGGING
             if batch_data is not None:
                 avg_return = batch_data[4].mean().item()
+            else:
+                print("[Master]> Batch empty: skip")
+                continue
             print(f"[Master]> Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC

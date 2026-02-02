@@ -413,9 +413,9 @@ class IkemenEnvironment:
             w = raw["frame_w"]
             h = raw["frame_h"]
             frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
-        flip = nextState.get("p1_facing", 1) == -1
-        if flip:
-            frame = np.flip(frame, axis=1).copy()
+            flip = nextState.get("p1_facing", 1) == -1
+            if flip:
+                frame = np.flip(frame, axis=1).copy()
         
         return nextState, frame
 
