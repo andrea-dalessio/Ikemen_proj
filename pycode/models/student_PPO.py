@@ -15,6 +15,32 @@ from .teacher_PPO import TeacherModel
 def vectorize(params):
     return torch.cat([p.reshape(-1) for p in params])
 
+def flip_frames(frames):
+    if frames.dim() == 3:
+        return torch.flip(frames, dims=[2])
+    elif frames.dim() == 4:
+        return torch.flip(frames, dims=[3])
+    else:
+        raise ValueError("Invalid frame shape")
+
+def process_frame(frame_np):
+    transform = T.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    x = torch.from_numpy(frame_np).float()
+    x = x/255
+    if x.dim() == 3:
+        if x.shape[2] == 4:
+            x = x[:,:,:3]
+        x = x.permute(2, 0, 1).unsqueeze(0)
+    else:
+        if x.shape[3] == 4:
+            x = x[:,:,:,:3]
+        x = x.permute(0, 3, 1, 2)
+
+    return transform(x)
+
 class StudentModel(nn.Module):
     def __init__(self, env, configs, load_checkpoint=False):
         super().__init__()
@@ -75,22 +101,7 @@ class StudentModel(nn.Module):
         model.network.load_state_dict(self.network.state_dict())
         return model
     
-    def process_frame(self, frame_np):
-        transform = T.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-        )
-        x = torch.from_numpy(frame_np).float() 
-        if x.dim() == 3:
-            if x.shape[2] == 4:
-                x = x[:,:,:3]
-            x = x.permute(2, 0, 1).unsqueeze(0)
-        else:
-            if x.shape[3] == 4:
-                x = x[:,:,:,:3]
-            x = x.permute(0, 3, 1, 2)
-        x = x/255
-        return transform(x)
+
         
     def act(self, frame, mode='exploit'):
         with torch.no_grad():
@@ -197,7 +208,7 @@ class StudentModel(nn.Module):
 
                 # --- CODICE PPO STANDARD ---
                 actions_batch = b_actions[mb_idxs].to(self.device)
-                frames_batch = b_frames[mb_idxs].to(self.device)
+                frames_batch = b_frames[mb_idxs].to(self.device) #TODO
                 _, s_logp, entropy, new_values = self.get_action_and_value(frames_batch, actions_batch)
                 del frames_batch
                 with torch.no_grad():
@@ -230,8 +241,6 @@ class StudentModel(nn.Module):
                 
         return last_frame, last_state, value_loss.item() # Return updated last_obs after keep-alive
 
-
-    # TODO : Clean accordingly...
     def runEpisode(self, state, frame, rollout_steps, opponent_model):
         
         b_frames = [] 
@@ -248,7 +257,7 @@ class StudentModel(nn.Module):
         crash_occurred = False
         
         # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
-        frame_tensor = self.process_frame(frame)
+        frame_tensor = process_frame(frame) #TODO
         
         state_tensor = torch.tensor(state, dtype=torch.float32)
         if self.env_number == 1:
@@ -264,7 +273,7 @@ class StudentModel(nn.Module):
                 frame_tensor_gpu = frame_tensor.to(self.device)
                 a1, logp1, _, v1 = self.get_action_and_value(frame_tensor_gpu)
                 
-                opponent_screen = self.flip_frames(frame_tensor_gpu)
+                opponent_screen = flip_frames(frame_tensor_gpu)
                 a2, _, _, _ = opponent_model.get_action_and_value(opponent_screen)
                 
                 del frame_tensor_gpu, opponent_screen
@@ -294,7 +303,7 @@ class StudentModel(nn.Module):
                 dones = torch.tensor(dones, dtype=torch.float32, device=self.device)      
                 
                 # --- 4. SALVATAGGIO DATI ---
-                b_frames.append(frame_tensor)
+                b_frames.append(frame_tensor) #TODO Check after uint shenaningans
                 b_states.append(state_tensor)
                 b_actions.append(a1)
                 b_logprobs.append(logp1)
@@ -305,7 +314,7 @@ class StudentModel(nn.Module):
                 
                 next_state = self.env.normalizeState(raw_next_state)
                 state_tensor = torch.tensor(next_state, dtype=torch.float32)
-                frame_tensor = self.process_frame(next_frames)
+                frame_tensor = process_frame(next_frames)  #TODO fix
                 # --- 5. GESTIONE FINE EPISODIO (RESET) ---
                 
                 for i, done in enumerate(dones):
@@ -324,7 +333,7 @@ class StudentModel(nn.Module):
                             break
                         normedState = self.env.normalizeState(raw_reset_state, i)
                         state_tensor[i] = torch.tensor(normedState, dtype=torch.float32)
-                        frame_tensor[i] = self.process_frame(reset_frames)
+                        frame_tensor[i] = process_frame(reset_frames) #TODO fix
                     else:
                         # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
                         self.env.setPreviousState(raw_next_state)
@@ -342,7 +351,7 @@ class StudentModel(nn.Module):
             return None, None, None, 0.0, True
 
         # --- 7. IMPACCHETTAMENTO ---
-        t_frames = torch.stack(b_frames)
+        t_frames = torch.stack(b_frames) #TODO Check after uint shenaningans
         t_states = torch.stack(b_states)
         t_actions = torch.stack(b_actions).cpu()
         t_logprobs = torch.stack(b_logprobs).cpu()
@@ -381,38 +390,7 @@ class StudentModel(nn.Module):
             win_rate = None
         
         torch.cuda.empty_cache()
-        return batch_data, next_frames, next_state, win_rate, False
-    
-    def keep_alive(self, current_frame, current_state):
-        """
-        Needed to keep the connection alive with the Ikemen env while the training runs!
-        """
-        # Generating no-op actions to keep servers alive
-        n_envs = self.env_number
-        dummy_action = np.zeros((n_envs, 2), dtype=int) 
-        
-        try:
-            self.env.executeAction(dummy_action, dummy_action)
-            
-            raw_next_states, new_frames = self.env.recieve()
-            
-            # Get new state to compute update
-            self.env.setPreviousObservation(raw_next_states)
-                
-
-            return self.env.normalizeState(raw_next_states), self.process_frame(new_frames)
-            
-        except Exception as e:
-            print(f"Warning: Keep-alive failed: {e}")
-            return current_frame, current_state    
-    
-    def flip_frames(self, frames):
-        if frames.dim() == 3:
-            return torch.flip(frames, dims=[2])
-        elif frames.dim() == 4:
-            return torch.flip(frames, dims=[3])
-        else:
-            raise ValueError("Invalid frame shape")
+        return batch_data, next_frames, next_state, win_rate, False 
     
     def trainPPO(self):
         print(f"Start Self-Play Training on {self.device}")
