@@ -222,7 +222,7 @@ class TeacherModel(nn.Module):
                 index += n
 
     def save(self, id):
-        torch.save(self.state_dict(), f"{self.savedir}/{self.saveName}_{id}.pt")
+        torch.save(self.state_dict(), f"{self.savedir}/{self.namespace}_{id}.pt")
 
     def load(self):
         saves = os.listdir(self.savedir)
@@ -538,7 +538,7 @@ class TeacherModel(nn.Module):
             else:
                 print("[Master]> Batch empty: skip")
                 continue
-            print(f"[Master]> Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
+            print(f"[Master]> Update {update + 1}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC
             # Se il learner vince > 60% delle volte, diventa il nuovo maestro
@@ -549,7 +549,7 @@ class TeacherModel(nn.Module):
             
             # E. SAVE CHECKPOINT
             if (update + 1) % 10 == 0:
-                self.save(update)
+                self.save(update + 1)
                 print(f"Checkpoint saved at update {update + 1}")
                 
             # F. LOG TO CSV

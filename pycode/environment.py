@@ -324,17 +324,17 @@ class IkemenEnvironment:
             
             # CASO 1: VITTORIA P1 (Teacher)
             if p1_hp > 0 and p2_hp <= 0:
-                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
+                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 reward += 5.0 
                 
             # CASO 2: SCONFITTA P1 (Vittoria Opponent)
             elif p1_hp <= 0 and p2_hp > 0:
-                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
+                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 reward -= 2.0 
                 
             # CASO 3: DOPPIO KO (Pareggio)
             elif (p1_hp <= 0 and p2_hp <= 0) or truncated:
-                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len}/{self.time_limit} ticks")
+                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 # Un pareggio è meglio di una sconfitta, ma peggio di una vittoria
                 reward -= 1.0
         return reward, done

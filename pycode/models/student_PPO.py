@@ -161,7 +161,7 @@ class StudentModel(nn.Module):
                 index += n
 
     def save(self, id):
-        torch.save(self.network.state_dict(), f"{self.savedir}/{self.saveName}_{id}.pt")
+        torch.save(self.network.state_dict(), f"{self.savedir}/{self.namespace}_{id}.pt")
 
     def load(self):
         saves = os.listdir(self.savedir)
