@@ -60,7 +60,7 @@ class StudentModel(nn.Module):
         
         self.configs = configs
         self.namespace = configs['studentModel']['namespace']
-        self.saveName = f'{os.getcwd()}/models_saves/{self.namespace}.pt'
+        self.savedir = f'{os.getcwd()}/models_saves_s'
         self.loggingPath = f'{os.getcwd()}/logs/{self.namespace}_training_logs.csv'
         
         self.gamma = configs['general']['gamma']
@@ -82,6 +82,8 @@ class StudentModel(nn.Module):
         self.actionsMove = env.action_space[1]
         self.actionsHit = env.action_space[2]
         
+        self.checkpoint = 0
+        
         print("Observation space: ",env.observation_space)
         print("Action space: ",env.action_space)
         
@@ -95,7 +97,7 @@ class StudentModel(nn.Module):
         self.teacher = TeacherModel(self.env, self.configs, load_checkpoint=True)
         self.to(self.device)
         
-        if load_checkpoint and Path(self.saveName).is_file():
+        if load_checkpoint and len(os.listdir(Path(self.savedir)))>0:
             self.load()
             print("Loaded Student Model from checkpoint.")
         else:
@@ -158,11 +160,20 @@ class StudentModel(nn.Module):
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
 
-    def save(self):
-        torch.save(self.state_dict(), self.saveName)
+    def save(self, id):
+        torch.save(self.network.state_dict(), f"{self.savedir}/{self.saveName}_{id}.pt")
 
     def load(self):
-        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
+        saves = os.listdir(self.savedir)
+        chosen = saves[-1]
+        saves = os.listdir(self.savedir)
+        chosen = saves[-1]
+        end = chosen.split("_")[-1]
+        id = end.split(".")[0]
+        if id.isdigit():
+            self.checkpoint = int(id)
+        print(f"[Student]> {self.savedir}/{chosen}")
+        self.network.load_state_dict(torch.load(f"{self.savedir}/{chosen}", map_location=self.device))
 
     def to(self, device):
         ret = super().to(device)
@@ -427,10 +438,10 @@ class StudentModel(nn.Module):
         global_step = 0
         win_rate_history = deque(maxlen=5)
 
-        for update in range(1, total_updates + 1):
+        for update in range(self.checkpoint, total_updates - self.checkpoint):
             torch.cuda.empty_cache()
             #os.system('clear')
-            print(f"[Master]> Update {update}: start episode")
+            print(f"[Master]> Update {update + 1}: start episode")
             # A. RACCOLTA DATI
             
             try:
@@ -479,23 +490,23 @@ class StudentModel(nn.Module):
             else:
                 print("[Master]> Batch empty: skip")
                 continue
-            print(f"[Master]> Update {update}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
+            print(f"[Master]> Update {update+1}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
 
             # D. OPPONENT UPGRADE LOGIC
             # Se il learner vince > 60% delle volte, diventa il nuovo maestro
             if avg_win_rate > 0.60 and len(win_rate_history) == 5:
-                print(f"[Master]> Update {update}: Opponent updated to current Learner policy.")
+                print(f"[Master]> Update {update+1}: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()
             
             # E. SAVE CHECKPOINT
-            if update % 10 == 0:
-                self.save()
-                print(f"[Master]> Update {update}: Checkpoint saved")
+            if (update+1) % 10 == 0:
+                self.save(update+1)
+                print(f"[Master]> Update {update+1}: Checkpoint saved")
                 
             # F. LOG TO CSV
             log_data = {
-                'update': update,
+                'update': update+1,
                 'steps': global_step,
                 'avg_return': avg_return,
                 'win_rate': avg_win_rate,

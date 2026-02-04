@@ -27,10 +27,11 @@ with open(configsPath, 'r') as configsFile:
 
 class IkemenEnvironment:
     host = CONFIGS['env']['host']
-    def __init__(self, training_mode:str, port:int, instance:int=0, headless=False):
+    def __init__(self, training_mode:str, port:int, instance:int=0, headless=False, flip_allowed=False):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.max_retries = CONFIGS['env']['max_retries']
         self.connected = False
+        self.flip_allowed = flip_allowed
         self.previousState = None
         self.port = port
         self.log = open(f"{os.getcwd()}/logs/log_{self.port}.txt", 'w')
@@ -414,7 +415,7 @@ class IkemenEnvironment:
             h = raw["frame_h"]
             frame = np.frombuffer(img, dtype=np.uint8).reshape((h, w, 4))
             flip = nextState.get("p1_facing", 1) == -1
-            if flip:
+            if flip and self.flip_allowed:
                 frame = np.flip(frame, axis=1).copy()
         
         return nextState, frame

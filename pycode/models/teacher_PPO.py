@@ -43,7 +43,7 @@ class TeacherModel(nn.Module):
         
         self.configs = configs
         self.namespace = configs['studentModel']['namespace']
-        self.saveName = f'{os.getcwd()}/models_saves/{self.namespace}.pt'
+        self.savedir = f'{os.getcwd()}/models_saves_t'
         self.loggingPath = f'{os.getcwd()}/logs/{self.namespace}_training_logs.csv'
         
         self.gamma = configs['general']['gamma']
@@ -58,6 +58,7 @@ class TeacherModel(nn.Module):
         self.batch_size = configs['teacherModel']['batch_size']
         self.minibatch_size = configs['teacherModel']['minibatch_size']
         self.rollout_steps = configs['teacherModel']['rollout_steps']
+        self.checkpoint = 0
         
         self.state_dim = env.state_space[1]
         self.actionsMove = env.action_space[1]
@@ -85,7 +86,7 @@ class TeacherModel(nn.Module):
 
         self.to(self.device)
         
-        if load_checkpoint and Path(self.saveName).is_file():
+        if load_checkpoint and len(os.listdir(Path(self.savedir)))>0:
             self.load()
             print("Loaded Teacher Model from checkpoint.")
         else:
@@ -220,11 +221,18 @@ class TeacherModel(nn.Module):
                 param.copy_(parametersVector[index:index + n].view(param.size()))
                 index += n
 
-    def save(self):
-        torch.save(self.state_dict(), self.saveName)
+    def save(self, id):
+        torch.save(self.state_dict(), f"{self.savedir}/{self.saveName}_{id}.pt")
 
     def load(self):
-        self.load_state_dict(torch.load(self.saveName, map_location=self.device))
+        saves = os.listdir(self.savedir)
+        chosen = saves[-1]
+        end = chosen.split("_")[-1]
+        id = end.split(".")[0]
+        if id.isdigit():
+            self.checkpoint = int(id)
+        print(f"[Teacher]> {self.savedir}/{chosen}")
+        self.load_state_dict(torch.load(f"{self.savedir}/{chosen}", map_location=self.device))
 
     def to(self, device):
         ret = super().to(device)
@@ -480,11 +488,11 @@ class TeacherModel(nn.Module):
 
         # --- TRAINING LOOP ---
         print("Start episode loop")
-        for update in range(1, total_updates + 1):
+        for update in range(self.checkpoint, total_updates - self.checkpoint):
             
             # A. RACCOLTA DATI
             
-            print(f"[Master]> Update {update}: start episode")
+            print(f"[Master]> Update {update + 1}: start episode")
             try:
                 self.env.start()
                 
@@ -540,13 +548,13 @@ class TeacherModel(nn.Module):
                 win_rate_history.clear()
             
             # E. SAVE CHECKPOINT
-            if update % 10 == 0:
-                self.save()
-                print(f"Checkpoint saved at update {update}")
+            if (update + 1) % 10 == 0:
+                self.save(update)
+                print(f"Checkpoint saved at update {update + 1}")
                 
             # F. LOG TO CSV
             log_data = {
-                'update': update,
+                'update': update + 1,
                 'steps': global_step,
                 'avg_return': avg_return,
                 'win_rate': avg_win_rate,

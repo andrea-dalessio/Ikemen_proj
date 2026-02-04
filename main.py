@@ -23,11 +23,18 @@ else:
         if not log.endswith('.csv'):
             os.remove(f"{os.getcwd()}/logs/{log}")
     print("Log dirctory OK")
-if 'models_saves' not in dirList:
-    os.mkdir(f"{os.getcwd()}/models_saves")
+
+if 'models_saves_t' not in dirList:
+    os.mkdir(f"{os.getcwd()}/models_saves_t")
     print("Saves directory created")
 else:
-    print("Saves dirctory OK")
+    print("Saves dirctory teacher OK")
+
+if 'models_saves_t' not in dirList:
+    os.mkdir(f"{os.getcwd()}/models_saves_s")
+    print("Saves directory created")
+else:
+    print("Saves dirctory student OK")
 
 envNum = int(args.n) if args.n is not None else 4
 print("Selected {} environment(s)".format(envNum))
@@ -42,7 +49,7 @@ if args.teacherTrain:
     
 elif args.studentTrain:
     env = SuperEnvironment(training_mode="student", environment_number=envNum, headless=headless)
-    model = StudentModel(env)
+    model = StudentModel(env, load_checkpoint=True)
     try:
         model.trainPPO()
     finally:
