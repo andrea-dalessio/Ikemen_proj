@@ -263,9 +263,35 @@ class StudentModel(nn.Module):
                 nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 optimizer.step()
                 # ---------------------------
+                
+                if time.time() - last_ping_time > ping_interval:
+                    last_frame, last_state = self.keep_alive(last_frame, last_state)
+                    last_ping_time = time.time()
+                
         builtins.print = originalPrint
         return last_frame, last_state, value_loss.item() # Return updated last_obs after keep-alive
 
+    def keep_alive(self, frame, state):
+        """
+        Needed to keep the connection alive with the Ikemen env while the training runs!
+        """
+        # Generating no-op actions to keep servers alive
+        n_envs = self.env_number
+        dummy_action = np.zeros((n_envs, 2), dtype=int) 
+        
+        try:
+            self.env.executeAction(dummy_action, dummy_action)
+            
+            raw_next_states, next_frame = self.env.recieve()
+            
+            # Get new state to compute update
+            self.env.setPreviousState(raw_next_states)
+            return next_frame, self.env.normalizeState(raw_next_states)
+
+        except Exception as e:
+            print(f"Warning: Keep-alive failed: {e}")
+            return frame, state
+        
     def runEpisode(self, state, frame, rollout_steps, opponent_model):
         
         b_frames = [] 
@@ -433,6 +459,19 @@ class StudentModel(nn.Module):
             {"params": self.network.decisor.parameters(), "lr": 1e-3}
         ])
 
+        try:
+            self.env.start()
+            
+            raw_init, frame = self.env.wait_for_match_start()
+            state = self.env.normalizeState(raw_init)
+            self.env.setPreviousState(raw_init) # Inizializziamo per il reward
+            
+            print("Environment connected successfully.")
+        except Exception as e:
+            print(f"Critical Error: Could not connect to environment. {repr(e)}")
+            self.env.close_game()
+            return
+
         # Variabili Loop
         total_updates = self.episodes
         global_step = 0
@@ -445,25 +484,22 @@ class StudentModel(nn.Module):
             # A. RACCOLTA DATI
             
             try:
-                self.env.start()
-                
-                raw_init, frame = self.env.wait_for_match_start()
-                state = self.env.normalizeState(raw_init)
-                self.env.setPreviousState(raw_init) # Inizializziamo per il reward
-                
-                print("Environment connected successfully.")
-            except Exception as e:
-                print(f"Critical Error: Could not connect to environment. {repr(e)}")
-                self.env.close_game()
-                return
-            
-            try:
                 builtins.print = safe_print
-                batch_data, next_frames, next_states, win_rate, _ = self.runEpisode(state, frame, self.configs['studentModel']['rollout_steps'], opponent_model)
+                batch_data, next_frames, next_states, win_rate, crash_occurred = self.runEpisode(state, frame, self.configs['studentModel']['rollout_steps'], opponent_model)
             finally:
                 builtins.print = originalPrint
             
-            self.env.close_game()
+            if crash_occurred or batch_data is None:
+                print(f"[Master]> Update {update+1}: Skipping update due to {'crash' if crash_occurred else 'lack of data'}. Resyncing...")
+                try:
+                    raw_new, next_frames = self.env.hard_restart()
+                    next_states = self.env.normalizeState(raw_new)
+                    self.env.setPreviousState(raw_new)
+                    print("Resync successful. Continuing training.")
+                except Exception as e:
+                    print(f"Critical Error during resync: {e}. Ending training.")
+                    break
+                continue
             
             
             # Aggiorniamo stato e contatori
@@ -482,7 +518,7 @@ class StudentModel(nn.Module):
             
             # B. UPDATE PPO (LEARNER)
             print(f"[Master]> Coumputing PPO update")
-            valueloss = self.ppo_update(optimizer, batch_data, last_state, last_frame)
+            frame, state, valueloss = self.ppo_update(optimizer, batch_data, last_state, last_frame)
             
             # C. LOGGING
             if batch_data is not None:

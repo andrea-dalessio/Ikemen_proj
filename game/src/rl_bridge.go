@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"sync"
-	"time"
 )
 
 type RLGameState struct {
@@ -153,8 +152,8 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 		log.Println("[Sync] failed to marshal state: ", err)
 		return AgentAction{}
 	}
-	fmt.Println("Set Write Deadline")
-	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	// fmt.Println("Set Write Deadline")
+	// conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 
 	// ---- SEND STATE ----
 
@@ -173,7 +172,7 @@ func SyncWithPython(state RLGameState, frame []byte, w, h int) AgentAction {
 	}
 
 	// ---- READ ACTION ----
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	// conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	action, err = readAction(conn)
 	if err != nil {
 		log.Printf("[Sync] Failed to read action: %v\n", err)

@@ -193,12 +193,8 @@ class TeacherModel(nn.Module):
             raw_next_states, _ = self.env.recieve()
             
             # Get new state to compute update
-            if self.env.count > 1:
-                # Case SuperEnvironment
-                self.env.envs[0].previousState = raw_next_states[0]
-                # Note: SuperEnv handles previousState for all envs internally.
-            else:
-                self.env.previousState = raw_next_states
+            
+            self.env.setPreviousState(raw_next_states)
                 
 
             return self.env.normalizeState(raw_next_states)
