@@ -243,14 +243,12 @@ class IkemenEnvironment:
     def rewardCompute(self, state):
         current_tick = state.get('tick', 0)
         relative_tick = current_tick - self.round_start_tick
-        self.cycle_number += 1
         
         # Warm-up (ignora primi frame)
         if relative_tick < 60:
             return 0.0, False
 
         terminated = False
-        truncated = False
         reward = 0.0
         
         MAX_LIFE = float(state.get('p1_life_max', 1000))
@@ -262,11 +260,8 @@ class IkemenEnvironment:
             print(f"[{self.instance}] Fighter KO")
             terminated = True
             
-        elif self.cycle_number > self.time_limit:
-            print(f"[{self.instance}] Time over")
-            truncated = True
         
-        done = terminated or truncated
+        done = terminated
         
         if self.previousState is not None:
             # --- 1. HEALTH REWARD (Invariato, buono) ---
@@ -333,7 +328,7 @@ class IkemenEnvironment:
                 reward -= 2.0 
                 
             # CASO 3: DOPPIO KO (Pareggio)
-            elif (p1_hp <= 0 and p2_hp <= 0) or truncated:
+            elif (p1_hp <= 0 and p2_hp <= 0):
                 print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 # Un pareggio è meglio di una sconfitta, ma peggio di una vittoria
                 reward -= 1.0

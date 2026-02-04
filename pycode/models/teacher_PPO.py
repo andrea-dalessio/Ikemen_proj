@@ -42,7 +42,7 @@ class TeacherModel(nn.Module):
             print(f"Using device: cpu")
         
         self.configs = configs
-        self.namespace = configs['studentModel']['namespace']
+        self.namespace = configs['teacherModel']['namespace']
         self.savedir = f'{os.getcwd()}/models_saves_t'
         self.loggingPath = f'{os.getcwd()}/logs/{self.namespace}_training_logs.csv'
         
@@ -171,8 +171,41 @@ class TeacherModel(nn.Module):
 
                 # --- KEEP ALIVE CHECK ---
                 # Se è passato troppo tempo dall'ultimo contatto con il gioco
+                if time.time() - last_ping_time > ping_interval:
+                    last_state = self.keep_alive(last_state)
+                    last_ping_time = time.time()
+        
+        
         builtins.print = originalPrint
         return last_state, value_loss.item() # Return updated last_obs after keep-alive
+    
+    def keep_alive(self, current_obs):
+        """
+        Needed to keep the connection alive with the Ikemen env while the training runs!
+        """
+        # Generating no-op actions to keep servers alive
+        n_envs = self.env_number
+        dummy_action = np.zeros((n_envs, 2), dtype=int) 
+        
+        try:
+            self.env.executeAction(dummy_action, dummy_action)
+            
+            raw_next_states, _ = self.env.recieve()
+            
+            # Get new state to compute update
+            if self.env.count > 1:
+                # Case SuperEnvironment
+                self.env.envs[0].previousState = raw_next_states[0]
+                # Note: SuperEnv handles previousState for all envs internally.
+            else:
+                self.env.previousState = raw_next_states
+                
+
+            return self.env.normalizeState(raw_next_states)
+            
+        except Exception as e:
+            print(f"Warning: Keep-alive failed: {e}")
+            return current_obs
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
@@ -473,6 +506,18 @@ class TeacherModel(nn.Module):
         # 1. SETUP ENV & CONNECTION
         # Inizializziamo l'ambiente
         
+        try:
+            self.env.start()
+            
+            raw_init, _ = self.env.wait_for_match_start()
+            self.env.setPreviousState(raw_init) # Inizializziamo per il reward
+            state = self.env.normalizeState(raw_init)
+            
+            print("Environment connected successfully.")
+        except Exception as e:
+            print(f"Critical Error: Could not connect to environment. {repr(e)}")
+            self.env.close_game()
+            return
 
         # 2. SETUP OPTIMIZER & OPPONENT
         
@@ -493,30 +538,29 @@ class TeacherModel(nn.Module):
             # A. RACCOLTA DATI
             
             print(f"[Master]> Update {update + 1}: start episode")
-            try:
-                self.env.start()
-                
-                raw_init, _ = self.env.wait_for_match_start()
-                self.env.setPreviousState(raw_init) # Inizializziamo per il reward
-                state = self.env.normalizeState(raw_init)
-                
-                print("Environment connected successfully.")
-            except Exception as e:
-                print(f"Critical Error: Could not connect to environment. {repr(e)}")
-                self.env.close_game()
-                return
+            
             try:
                 builtins.print = safe_print
                 batch_data, next_state, win_rate, crash_occurred = self.runEpisode(state, self.configs['teacherModel']['rollout_steps'], opponent_model)
             finally:
                 builtins.print = originalPrint
             
-            self.env.close_game()
+            if crash_occurred or batch_data is None:
+                print(f"[Master]> Update {update+1}: Skipping update due to {'crash' if crash_occurred else 'lack of data'}. Resyncing...")
+                try:
+                    raw_new, _ = self.env.hard_restart()
+                    state = self.env.normalizeState(raw_new)
+                    self.env.setPreviousState(raw_new)
+                    print("Resync successful. Continuing training.")
+                except Exception as e:
+                    print(f"Critical Error during resync: {e}. Ending training.")
+                    break
+                continue
             
 
             
             # Aggiorniamo stato e contatori
-            last_obs = next_state
+            state = next_state
             global_step += self.rollout_steps
             
             # Tracking
@@ -530,7 +574,7 @@ class TeacherModel(nn.Module):
             
             # B. UPDATE PPO (LEARNER)
             print(f"[Master]> Coumputing PPO update")
-            last_obs, valueloss = self.ppo_update(self, optimizer, batch_data, last_obs)
+            state, valueloss = self.ppo_update(self, optimizer, batch_data, state)
             
             # C. LOGGING
             if batch_data is not None:
