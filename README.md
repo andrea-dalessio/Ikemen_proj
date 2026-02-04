@@ -49,3 +49,8 @@ type RLGameState struct {
 "reset": "bool"
 }
 ~~~
+
+## TODO
+
+- Remove the ticks/max_tiks message in the env
+- Fix print message update missmatch
