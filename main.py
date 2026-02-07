@@ -32,7 +32,7 @@ if 'models_saves_t' not in dirList:
 else:
     print("Saves dirctory teacher OK")
 
-if 'models_saves_t' not in dirList:
+if 'models_saves_s' not in dirList:
     os.mkdir(f"{os.getcwd()}/models_saves_s")
     print("Saves directory created")
 else:

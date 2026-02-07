@@ -219,7 +219,6 @@ class StudentModel(nn.Module):
             indices = np.random.permutation(current_batch_size)
             
             for start in range(0, current_batch_size, self.minibatch_size):
-                torch.cuda.empty_cache()
                 end = start + self.minibatch_size
                 mb_idxs = indices[start:end]
 
@@ -479,14 +478,14 @@ class StudentModel(nn.Module):
         
         print(f"[Master]> Start episode loop from {self.checkpoint}")
         for update in range(self.checkpoint, total_updates):
-            torch.cuda.empty_cache()
             #os.system('clear')
             print(f"[Master]> Update {update + 1}: start episode")
             # A. RACCOLTA DATI
             
             try:
                 builtins.print = safe_print
-                batch_data, next_frames, next_states, win_rate, crash_occurred = self.runEpisode(state, frame, self.configs['studentModel']['rollout_steps'], opponent_model)
+                with torch.no_grad():
+                    batch_data, next_frames, next_states, win_rate, crash_occurred = self.runEpisode(state, frame, self.configs['studentModel']['rollout_steps'], opponent_model)
             finally:
                 builtins.print = originalPrint
             
@@ -528,7 +527,7 @@ class StudentModel(nn.Module):
                 print("[Master]> Batch empty: skip")
                 continue
             print(f"[Master]> Update {update+1}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
-
+            del batch_data, next_frames, next_states
             # D. OPPONENT UPGRADE LOGIC
             # Se il learner vince > 60% delle volte, diventa il nuovo maestro
             if avg_win_rate > 0.60 and len(win_rate_history) == 5:
