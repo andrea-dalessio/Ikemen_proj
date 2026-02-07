@@ -289,7 +289,7 @@ class TeacherModel(nn.Module):
             action_attack = logits_attack.argmax(dim=-1)
             action = torch.stack([action_move, action_attack], dim=1)
 
-        return action.item()
+        return action
 
     # TODO : Clean accordingly...
     def runEpisode(self, last_state, rollout_steps, opponent_model):
@@ -528,8 +528,8 @@ class TeacherModel(nn.Module):
         win_rate_history = deque(maxlen=5)
 
         # --- TRAINING LOOP ---
-        print("Start episode loop")
-        for update in range(self.checkpoint, total_updates - self.checkpoint):
+        print(f"[Master]> Start episode loop from {self.checkpoint}")
+        for update in range(self.checkpoint, total_updates):
             
             # A. RACCOLTA DATI
             

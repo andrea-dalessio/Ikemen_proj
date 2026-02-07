@@ -476,8 +476,9 @@ class StudentModel(nn.Module):
         total_updates = self.episodes
         global_step = 0
         win_rate_history = deque(maxlen=5)
-
-        for update in range(self.checkpoint, total_updates - self.checkpoint):
+        
+        print(f"[Master]> Start episode loop from {self.checkpoint}")
+        for update in range(self.checkpoint, total_updates):
             torch.cuda.empty_cache()
             #os.system('clear')
             print(f"[Master]> Update {update + 1}: start episode")
