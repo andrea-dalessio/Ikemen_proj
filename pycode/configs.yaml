@@ -30,8 +30,8 @@ teacherModel:
     namespace: teacher_model
 
 studentModel:
-    rollout_steps: 24
-    minibatch_size: 64
+    rollout_steps: 2048
+    minibatch_size: 128
     update_epochs: 4
     num_envs: 4
     batch_size: 8192
@@ -39,3 +39,4 @@ studentModel:
     namespace: student_model
     temperature: 2
     dist_coef: 0.3
+    colab: false

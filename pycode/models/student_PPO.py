@@ -578,6 +578,8 @@ class StudentModel(nn.Module):
                 self.save(update+1)
                 print(f"[Master]> Update {update+1}: Checkpoint saved")
                 
+            if self.configs['studentModel']['colab']:
+                torch.save(self.network.state_dict(), '/content/drive/MyDrive/RL_Backup/backup.pt')
             # F. LOG TO CSV
             log_data = {
                 'update': update+1,
