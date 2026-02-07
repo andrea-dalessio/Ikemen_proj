@@ -109,6 +109,21 @@ class StudentModel(nn.Module):
         return model
     
 
+
+    def distillation_kl(self, student_logits, teacher_logits, temperature):
+        """
+        KL( teacher || student ) with temperature scaling
+        """
+        t = temperature
+
+        teacher_probs = torch.softmax(teacher_logits / t, dim=-1)
+        student_log_probs = torch.log_softmax(student_logits / t, dim=-1)
+
+        kl = torch.sum(
+            teacher_probs * (torch.log(teacher_probs + 1e-8) - student_log_probs),
+            dim=-1
+        )
+        return kl.mean() * (t ** 2)
         
     def act(self, frame, mode='exploit'):
         with torch.no_grad():
@@ -225,38 +240,58 @@ class StudentModel(nn.Module):
                 # --- CODICE PPO STANDARD ---
                 actions_batch = b_actions[mb_idxs].to(self.device)
                 frames_batch = process_frame(b_frames[mb_idxs]).to(self.device) #TODO
-                _, s_logp, entropy, new_values = self.get_action_and_value(frames_batch, actions_batch)
+                s_logits_move, s_logits_attack, new_values = self.network.getMoveAndAttackAndValue(frames_batch)
+                
+                s_dist_move = torch.distributions.Categorical(logits=s_logits_move)
+                s_dist_attack = torch.distributions.Categorical(logits=s_logits_attack)
+                s_logp = (
+                    s_dist_move.log_prob(actions_batch[:, 0]) +
+                    s_dist_attack.log_prob(actions_batch[:, 1])
+                )
+                
+                entropy = s_dist_move.entropy() + s_dist_attack.entropy()
+                # _, s_logp, entropy, new_values = self.get_action_and_value(frames_batch, actions_batch)
                 del frames_batch
                 with torch.no_grad():
                     state_batch = b_state[mb_idxs].to(self.device)
-                    _, t_logp, _, _ = self.teacher.get_action_and_value(state_batch, actions_batch)
+                    # _, t_logp, _, _ = self.teacher.get_action_and_value(state_batch, actions_batch)
+                    t_logits_move, t_logits_attack = self.teacher.getLogits(state_batch)
                     del state_batch, actions_batch
                     
-                entropy = entropy.cpu()
-                new_values = new_values.cpu()
-                s_logp = s_logp.cpu()
-                t_logp = t_logp.cpu()
                     
-                logratio = s_logp - b_logprobs[mb_idxs]
+                logratio = s_logp - b_logprobs[mb_idxs].to(self.device)
                 ratio = logratio.exp()
-                mb_advantages = b_advantages[mb_idxs]
+                mb_advavantage = b_advantages[mb_idxs].to(self.device)
                 
-                if mb_advantages.std() > 1e-8:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                if mb_advavantage.std() > 1e-8:
+                    mb_advavantage = (mb_advavantage - mb_advavantage.mean()) / (mb_advavantage.std() + 1e-8)
                 
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                policy_loss = torch.max(
+                    -mb_advavantage * ratio,
+                    -mb_advavantage * torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+                ).mean()
                 
-                policy_loss = torch.max(pg_loss1, pg_loss2).mean()
+                returns_mb = b_returns[mb_idxs].to(self.device)
                 
-                value_loss = 0.5 * ((new_values - b_returns[mb_idxs]) ** 2).mean()
+                value_loss = 0.5 * ((new_values.squeeze(-1) - returns_mb) ** 2).mean()
                 
-                ppo_loss = policy_loss - (self.entropy_coef * entropy.mean()) + (self.value_loss_coef * value_loss)
+                entropy_loss = -self.entropy_coef * entropy.mean()
                 
-                distilation_loss = torch.sum(torch.exp(t_logp/temp) * (t_logp/temp - s_logp/temp),dim=-1)
+                ppo_loss = policy_loss + self.value_loss_coef * value_loss + entropy_loss
                 
-                loss = ppo_loss + distilation_loss.mean()*(temp ** 2) * self.dist_coef
+                distill_loss = 0.0
+
+                # Disable distillation if policy is collapsing
+                if self.dist_coef > 0 and b_returns.mean() > -0.2:
+                    distill_loss = (
+                        self.distillation_kl(s_logits_move, t_logits_move, self.dist_temperature) +
+                        self.distillation_kl(s_logits_attack, t_logits_attack, self.dist_temperature)
+                    ) * self.dist_coef
                 
+                loss = ppo_loss + distill_loss
+
+                del returns_mb
+
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
@@ -268,7 +303,7 @@ class StudentModel(nn.Module):
                     last_ping_time = time.time()
                 
         builtins.print = originalPrint
-        return last_frame, last_state, value_loss.item() # Return updated last_obs after keep-alive
+        return last_frame, last_state, value_loss.item(), entropy.mean().item()
 
     def keep_alive(self, frame, state):
         """
@@ -516,9 +551,12 @@ class StudentModel(nn.Module):
             else:
                 avg_win_rate = 0.0
             
+            # Entropy decay
+            self.entropy_coef = max(0.001, 0.02*(1-(update/total_updates)))
+            
             # B. UPDATE PPO (LEARNER)
             print(f"[Master]> Coumputing PPO update")
-            frame, state, valueloss = self.ppo_update(optimizer, batch_data, last_state, last_frame)
+            frame, state, valueloss, entropy = self.ppo_update(optimizer, batch_data, last_state, last_frame)
             
             # C. LOGGING
             if batch_data is not None:
@@ -530,7 +568,7 @@ class StudentModel(nn.Module):
             del batch_data, next_frames, next_states
             # D. OPPONENT UPGRADE LOGIC
             # Se il learner vince > 60% delle volte, diventa il nuovo maestro
-            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
+            if avg_win_rate > 0.60 and len(win_rate_history) == 7:
                 print(f"[Master]> Update {update+1}: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()
@@ -546,7 +584,8 @@ class StudentModel(nn.Module):
                 'steps': global_step,
                 'avg_return': avg_return,
                 'win_rate': avg_win_rate,
-                'value_loss': valueloss
+                'value_loss': valueloss,
+                'entropy': entropy
             }
             df = DataFrame([log_data])
             df.to_csv(self.loggingPath, mode='a', header=not Path(self.loggingPath).is_file(), index=False)

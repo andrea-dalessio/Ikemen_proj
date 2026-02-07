@@ -203,6 +203,18 @@ class TeacherModel(nn.Module):
             print(f"Warning: Keep-alive failed: {e}")
             return current_obs
     
+    def getLogits(self, x):
+        x = F.relu(self.input_layer(x))
+        x = self.res_block1(x)
+        x = self.res_block2(x)
+        x = self.res_block3(x)
+        hidden = F.relu(self.feature_head(x))
+        logits_move = self.movePolicy(hidden)
+        logits_attack = self.hitPolicy(hidden)
+        
+        return logits_move, logits_attack
+    
+    
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
         x = F.relu(self.input_layer(x))
