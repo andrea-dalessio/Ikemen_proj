@@ -1,3 +1,5 @@
 ./game/Ikemen_GO_Linux
 **/__pycache__
 /logs/log_*
+/backups
+/models_saves_s
