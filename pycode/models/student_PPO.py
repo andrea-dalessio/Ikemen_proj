@@ -128,17 +128,13 @@ class StudentModel(nn.Module):
     def act(self, frame, mode='exploit'):
         with torch.no_grad():
             logits_move, logits_attack = self.network.getMoveAndAttack(frame)
-        if mode == 'explore':
-            dist_move = torch.distributions.Categorical(logits=logits_move)
-            dist_attack = torch.distributions.Categorical(logits=logits_attack)
-            action_move = dist_move.sample()
-            action_attack = dist_attack.sample()
-        else:
-            action_move = logits_move.argmax(dim=-1)
-            action_attack = logits_attack.argmax(dim=-1)
+        dist_move = torch.distributions.Categorical(logits=logits_move)
+        dist_attack = torch.distributions.Categorical(logits=logits_attack)
+        action_move = dist_move.sample()
+        action_attack = dist_attack.sample()
         action = torch.stack([action_move, action_attack], dim=1)
 
-        return action.item()
+        return action
     
     def get_action_and_value(self, x, action=None):
         """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
@@ -345,8 +341,6 @@ class StudentModel(nn.Module):
         frame_tensor = torch.tensor(frame, dtype=torch.uint8) 
         
         state_tensor = torch.tensor(state, dtype=torch.float32)
-        if self.env_number == 1:
-            state_tensor = state_tensor.unsqueeze(0)
 
         # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
         if not self.env.hasPreviousState:
@@ -594,3 +588,65 @@ class StudentModel(nn.Module):
 
         print("[Master]> Training completed.")
         self.env.close_game()
+        
+    def evaluation(self):
+        print("[Master]> Creation opponent model")
+        opponent_model = self.make_copy()
+        opponent_model.to(self.device)
+        opponent_model.eval()
+        for param in opponent_model.parameters():
+            param.requires_grad = False
+
+        print("[Master]> Starting environment... ", end='')
+        try:
+            self.env.start()
+            state, frame = self.env.wait_for_match_start()
+            print("Environment connected successfully.")
+            self.env.setPreviousState(state.copy())
+        except Exception as e:
+            print(f"Connection error {e}")
+            self.env.close_game()
+            return
+        frame_tensor = torch.tensor(frame, dtype=torch.uint8) 
+
+        if not self.env.hasPreviousState:
+            self.env.setPreviousState(state.copy())
+        
+        # print(frame_tensor.shape)
+        
+        done = False
+        
+        total_reward = 0
+        print("[Master]> Game start")
+        while not done:
+            with torch.no_grad():
+                frame_tensor_gpu = process_frame(frame_tensor).to(self.device)
+                a1 = self.act(frame_tensor_gpu)
+                
+                opponent_screen = flip_frames(frame_tensor_gpu)
+                a2 = opponent_model.act(opponent_screen)
+            
+            del frame_tensor_gpu, opponent_screen
+            
+            act_p1 = a1.cpu().numpy()
+            act_p2 = a2.cpu().numpy()
+
+            try:
+                self.env.executeAction(act_p1, act_p2)
+                
+            except Exception as e:
+                print(f"Errore action execution: {e}")
+                break
+
+            try:
+                state, next_frames = self.env.recieve()
+            except Exception as e:
+                print(f"Errore reception: {e}. Interrompo rollout.")
+                break
+            frame_tensor = torch.tensor(next_frames, dtype=torch.uint8)
+            rewards, dones = self.env.rewardCompute(state)
+            total_reward += rewards[0]
+            done = dones[0]
+        self.env.close_game()
+        print(f"[Master]> Reward: {total_reward}")
+        

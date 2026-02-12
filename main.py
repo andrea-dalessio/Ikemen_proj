@@ -46,7 +46,6 @@ if args.teacherTrain:
     try:
         model.trainPPO()
     finally:
-        env.disconnect()
         env.close_game()
     
 elif args.studentTrain:
@@ -55,36 +54,16 @@ elif args.studentTrain:
     try:
         model.trainPPO()
     finally:
-        env.disconnect()
         env.close_game()
         
-# elif args.teacherEval:
-#     env = IkemenEnvironment(training_mode="teacher", port=8080)
-#     model = TeacherModel(env, load_checkpoint=True)
-#     done = False
-#     env.connect()
-#     env.launch_game()
-#     try:
-#         env.start()
-#         first_state_raw, _  = env.wait_for_match_start()
-#         env.previousState = first_state_raw
-#         first_state = env.normalizeState(first_state_raw)
-#     except Exception as e:
-#         print(f"Critical Error: Could not connect to environment. {repr(e)}")
-#         env.close_game()
-    
-#     state = torch.tensor(first_state, dtype=torch.float32, device=model.device)
-#     while not done:
-        
-#         action = model.act(state)
-        
-#         pass
-
-
 elif args.eval:
-    env = IkemenEnvironment(training_mode="student", port=8080)
-    model = StudentModel(env)
-    ...
+    env = SuperEnvironment(training_mode="student", environment_number=1)
+    model = StudentModel(env, load_checkpoint=True)
+    try:
+        model.evaluation()
+    finally:
+        env.close_game()
+
 else:
     parser.print_help()
     
