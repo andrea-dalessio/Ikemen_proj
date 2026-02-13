@@ -12,7 +12,6 @@ env:
     trunk_ticks: 20000
 
 general:
-    lr: 1.0e-4
     gamma: 0.99
     gae_lambda: 0.95
     clip_epsilon: 0.1
@@ -21,6 +20,7 @@ general:
     max_grad_norm: 0.5
 
 teacherModel:
+    lr: 1e-4
     rollout_steps: 2048
     minibatch_size: 1024
     update_epochs: 4
@@ -30,6 +30,8 @@ teacherModel:
     namespace: teacher_model
 
 studentModel:
+    lr_decisor: 1e-3
+    lr_backbone: 1e-4
     rollout_steps: 2048
     minibatch_size: 128
     update_epochs: 4

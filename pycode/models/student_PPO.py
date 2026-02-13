@@ -66,11 +66,12 @@ class StudentModel(nn.Module):
         self.gamma = configs['general']['gamma']
         self.gae_lambda = configs['general']['gae_lambda']
         self.episodes = configs['studentModel']['episodes']
-        self.lr = configs['general']['lr']
         self.clip_epsilon = configs['general']['clip_epsilon']
         self.entropy_coef = configs['general']['entropy_coef']
         self.value_loss_coef = configs['general']['value_loss_coef']
         self.max_grad_norm = configs['general']['max_grad_norm']
+        self.lr_d = configs['studentModel']['lr_decisor']
+        self.lr_b = configs['studentModel']['lr_backbone']
         self.update_epochs = configs['studentModel']['update_epochs']
         self.batch_size = configs['studentModel']['batch_size']
         self.minibatch_size = configs['studentModel']['minibatch_size']
@@ -431,8 +432,8 @@ class StudentModel(nn.Module):
             param.requires_grad = False
         
         optimizer = torch.optim.Adam([
-            {"params": self.network.backbone.layer4.parameters(), "lr": 1e-4},
-            {"params": self.network.decisor.parameters(), "lr": 1e-3}
+            {"params": self.network.backbone.layer4.parameters(), "lr": self.lr_b},
+            {"params": self.network.decisor.parameters(), "lr": self.lr_d}
         ])
 
         try:
