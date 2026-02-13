@@ -59,6 +59,7 @@ elif args.studentTrain:
 elif args.eval:
     env = SuperEnvironment(training_mode="student", environment_number=1)
     model = StudentModel(env, load_checkpoint=True)
+    model.network.eval()
     try:
         model.evaluation()
     finally:
