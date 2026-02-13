@@ -19,7 +19,7 @@ with open(configsPath, 'r') as configsFile:
     # actionStruct = {
     #     "p1_move": move, 
     #     "p1_btn": btn, 
-    #     "p2_move": "",  # Player 2 fermo
+    #     "p2_move": "",
     #     "p2_btn": "", 
     #     "reset": False
     #     "end": False
@@ -43,11 +43,11 @@ class IkemenEnvironment:
             'D': 'down',
             'L': 'left',
             'R': 'right',
-            'UL': 'up left',    # O "7" (Numpad)
-            'UR': 'up right',   # O "9"
-            'DL': 'down left',  # O "1"
-            'DR': 'down right', # O "3"
-            '-': ''             # Neutro
+            'UL': 'up left',    
+            'UR': 'up right',   
+            'DL': 'down left', 
+            'DR': 'down right',
+            '-': ''            
         }        
         
         self.actionMapHit = {
@@ -83,16 +83,11 @@ class IkemenEnvironment:
         else:
             raise ValueError(f"[{self.instance}] Invalid training mode. Choose 'teacher' or 'student'.")
         
-        # Here's the subprocess constructor :)
+
         self.game_process = None
-        
-        # Track this to set the "t0" for each round
         self.round_start_tick = 0
 
     def wait_for_match_start(self, timeout=30):
-        """
-        Handshake protocol
-        """
         print(f"[{self.instance}] Syncing with game...")
         start_time = time.time()
         
@@ -101,16 +96,11 @@ class IkemenEnvironment:
         
         while time.time() - start_time < timeout:
             try:
-                # 1. Invia un comando "tutto fermo" per svegliare il server
-                # Nota: usa gli indici 0 (Nessun movimento, Nessun attacco)
-                # Adatta gli indici se 0 non è "Nothing" nella tua mappa
                 self.executeAction((0, 0), (0, 0)) 
                 
-                # 2. Prova a leggere lo stato
-                # Usiamo un timeout breve sul socket se possibile, o ci affidiamo al try/except
                 self.socket.settimeout(1.0) 
                 state, frame = self.recieve()
-                self.socket.settimeout(None) # Rimuovi timeout
+                self.socket.settimeout(None)
                 
                 if state is not None:
                     if state.get('p1_hp', 0) > 0:
@@ -118,7 +108,6 @@ class IkemenEnvironment:
                         return state, frame
                     
             except (ConnectionError, struct.error, socket.timeout):
-                # Se fallisce, aspetta un po' e riprova
                 time.sleep(0.5)
             except Exception as e:
                 print(f"[{self.instance}] Unexpected error during sync: {e}")
@@ -127,14 +116,11 @@ class IkemenEnvironment:
         raise TimeoutError(f"[{self.instance}] Il gioco non ha risposto entro il tempo limite.")
 
     def connect(self):
-        # 1. Kill all previous sockets
         if self.socket is not None:
             self.disconnect()
 
-        # 2. Errno 106 (Transport endpoint is already connected) workaround
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         
-        # Optional: Timeout to avoid infinite blocking in connect
         self.socket.settimeout(5.0) 
 
         print(f"[{self.instance}] Opening on {self.host}:{self.port}")
@@ -142,23 +128,21 @@ class IkemenEnvironment:
             try:
                 self.socket.connect((self.host, self.port))
                 self.connected = True
-                self.socket.settimeout(None) # Remove timeout for normal operation
+                self.socket.settimeout(None)
                 return
             except (ConnectionError, socket.timeout, OSError) as e:
                 print(f"[{self.instance}] Failed connection [{i+1}/{self.max_retries}]: {e}")
                 time.sleep(2)
         
-        # If all attempts fail, clean up
         self.socket = None 
         raise ConnectionError(f"[{self.instance}] Failed connection after retries")   
     
-    # Here you launch the game!
     def launch_game(self):
         game_path = parentPath.parent / "game/Ikemen_GO_Linux"
         if not os.path.exists(game_path):
             raise FileNotFoundError(f"[{self.instance}] Game executable not found at {game_path}")
         
-        portNumber = str(self.port) # Adjust as needed  
+        portNumber = str(self.port)
         env = os.environ.copy()
         if self.headless:
             print(f"[{self.instance}] Headless mode")
@@ -244,7 +228,6 @@ class IkemenEnvironment:
         current_tick = state.get('tick', 0)
         relative_tick = current_tick - self.round_start_tick
         
-        # Warm-up (ignora primi frame)
         if relative_tick < 60:
             return 0.0, False
 
@@ -254,8 +237,7 @@ class IkemenEnvironment:
         MAX_LIFE = float(state.get('p1_life_max', 1000))
         p1_hp = state.get('p1_hp', 0)
         p2_hp = state.get('p2_hp', 0)
-        
-        # Fine Match
+
         if p1_hp <= 0 or p2_hp <= 0:
             print(f"[{self.instance}] Fighter KO")
             terminated = True
@@ -264,9 +246,6 @@ class IkemenEnvironment:
         done = terminated
         
         if self.previousState is not None:
-            # --- 1. HEALTH REWARD (Invariato, buono) ---
-            # Premia molto il danno fatto, punisce metà il danno subito.
-            # Questo incoraggia il "trading" aggressivo.
             diff_p2 = self.previousState['p2_hp'] - p2_hp
             diff_p1 = self.previousState['p1_hp'] - p1_hp
             if diff_p2 < 0: diff_p2 = 0
@@ -275,18 +254,14 @@ class IkemenEnvironment:
             reward += (diff_p2 / MAX_LIFE) * 3.0
             reward -= (diff_p1 / MAX_LIFE) * 4.0   
             
-            # --- 2. NUOVO: CLOSING IN REWARD (Invece della Distance Penalty) ---
-            # Se ti avvicini, ti do un biscottino. Se ti allontani, niente (o piccolo malus).
-            # Questo insegna a "cacciare" l'avversario invece di scappare.
             prev_dist = abs(self.previousState.get('p1_x',0) - self.previousState.get('p2_x',0))
             curr_dist = abs(state.get('p1_x',0) - state.get('p2_x',0))
             
-            # Tieni la pressione. Tension up!
             if curr_dist < prev_dist:
                 reward += 0.002 
             
             elif curr_dist > prev_dist:
-                retreat_pen = 0.005 # Se ti arretri, negative penalty!
+                retreat_pen = 0.005
                 p1_x = state.get('p1_x',0)
                 p1_facing = state.get('p1_facing',1)
                 if ((p1_x < -900) and (p1_facing == 1)) or ((p1_x > 900) and (p1_facing == -1)):  # Backed up into corner penalty
@@ -296,7 +271,7 @@ class IkemenEnvironment:
                     retreat_pen *= 0.2
                 
                 if p1_hp > p2_hp:
-                    retreat_pen *= 1.5  # Più punizione se sei in vantaggio
+                    retreat_pen *= 1.5
                     
                 reward -= retreat_pen
             
@@ -304,33 +279,23 @@ class IkemenEnvironment:
             if 200 <= animno <= 800 and curr_dist > 150.0:
                 reward -= 0.005
                 
-            
-            # --- 3. DYNAMIC SLOW PLAY PENALTY ---
             FIGHT_RANGE = 180.0
             if curr_dist > FIGHT_RANGE:
                 reward -= 0.002
             else:
-                reward -= 0.0005  # Penalità minore se sei in range di combattimento
+                reward -= 0.0005
             
-            # --- 4. WIN/LOSS MASSICCI ---
         if done:
-            # Calcoliamo quanto è durato il match per il log
             match_len = relative_tick 
             
-            # CASO 1: VITTORIA P1 (Teacher)
             if p1_hp > 0 and p2_hp <= 0:
-                print(f"[{self.instance}] 🏆 WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                print(f"[{self.instance}] WIN  | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 reward += 5.0 
-                
-            # CASO 2: SCONFITTA P1 (Vittoria Opponent)
             elif p1_hp <= 0 and p2_hp > 0:
-                print(f"[{self.instance}] 💀 LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
+                print(f"[{self.instance}] LOSS | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 reward -= 2.0 
-                
-            # CASO 3: DOPPIO KO (Pareggio)
             elif (p1_hp <= 0 and p2_hp <= 0):
-                print(f"[{self.instance}] 🤝 DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
-                # Un pareggio è meglio di una sconfitta, ma peggio di una vittoria
+                print(f"[{self.instance}] DRAW | HP: {p1_hp} vs {p2_hp} | Duration: {match_len} ticks")
                 reward -= 1.0
         return reward, done
 
@@ -345,17 +310,15 @@ class IkemenEnvironment:
         return compact_anim / NEW_MAX
 
     def normalizeState(self, state):
-        """ Transforms the raw state into a normalized state vector for the teacher model. Good so you don't have to normalize it later!"""
         p1_x = state.get('p1_x', 0)
         p2_x = state.get('p2_x', 0)
         p1_y = state.get('p1_y', 0)
         p2_y = state.get('p2_y', 0)
         
-        # Now using "time elapsed" feat instead of "time remaining"
         raw_tick = state.get('tick', 0)
         current_tick = raw_tick - self.round_start_tick
         MAX_DURATION = 20000.0
-        if current_tick < 0: current_tick = 0  # Safety check
+        if current_tick < 0: current_tick = 0
         time_norm = current_tick / MAX_DURATION
         time_feat = np.clip(time_norm, 0.0, 1.0)
         
@@ -364,21 +327,19 @@ class IkemenEnvironment:
         prev_p1_y = self.previousState.get('p1_y', p1_y) if self.previousState else p1_y
         prev_p2_y = self.previousState.get('p2_y', p2_y) if self.previousState else p2_y
         
-        # Velocities (normalized)
-        p1_dx = (p1_x - prev_p1_x) / 20.0  # Assuming max speed of 20 units/frame (estimated, fine-tune as needed)
+        p1_dx = (p1_x - prev_p1_x) / 20.0
         p2_dx = (p2_x - prev_p2_x) / 20.0
         p1_dy = (p1_y - prev_p1_y) / 20.0
         p2_dy = (p2_y - prev_p2_y) / 20.0
         
-        # Using normalized hp values to max values and distance between players
         state_vector = np.array([
             state.get('p1_hp', 0) / state.get('p1_life_max', 1000),
             state.get('p2_hp', 0) / state.get('p2_life_max', 1000),
-            (p2_x - p1_x) / 1000.0,  # Assuming max distance of 1000 units. Safe constant used to keep into account zoom out feature.
-            (p2_y - p1_y) / 600.0,  # Assuming max vertical distance of 600 units (enemy can be launched higher than upper screen bound)
-            (p1_x + 1000.0) / 2000.0,  # Normalized position on max stahge width (2000 units)
+            (p2_x - p1_x) / 1000.0,  
+            (p2_y - p1_y) / 600.0,  
+            (p1_x + 1000.0) / 2000.0, 
             (p2_x + 1000.0) / 2000.0,
-            state.get('p1_facing', 1),  # Facing direction (1 or -1)
+            state.get('p1_facing', 1), 
             state.get('p2_facing', 1),
             state.get('p1_power', 0) / 3000.0,
             state.get('p2_power', 0) / 3000.0,
@@ -386,20 +347,19 @@ class IkemenEnvironment:
             self.normalize_anim_smart(state.get('p2_anim_no', 0)),
             time_feat,
             p1_dx, p1_dy, p2_dx, p2_dy,
-            state.get('p1_y', 0) / -200.0,   # Normalized position on max stage height
-            state.get('p2_y', 0) / -200.0  # Normalized position on max stage height            
+            state.get('p1_y', 0) / -200.0,   
+            state.get('p2_y', 0) / -200.0            
             ], 
             dtype=np.float32
         )
         
         return state_vector
         
-    def recieve(self): # Editing module to return frame only if needed. Also correcting bugs and restructuring state vector
+    def recieve(self):
         json_size = struct.unpack('>I', self.recieveHelper(4))[0]
         raw = json.loads(self.recieveHelper(json_size))
         
         nextState = raw['state']
-        
         
         img_size = struct.unpack('>I', self.recieveHelper(4))[0]
         img = self.recieveHelper(img_size)
@@ -415,12 +375,10 @@ class IkemenEnvironment:
         
         return nextState, frame
 
-    # Rewritten because action detection was faulty (for movements)
     def executeAction(self, actionP1, actionP2):
         if not self.connected:
             return
 
-        # Facing directions
         p1_facing = 1
         p2_facing = -1
         
@@ -428,15 +386,12 @@ class IkemenEnvironment:
             p1_facing = self.previousState.get('p1_facing', 1)
             p2_facing = self.previousState.get('p2_facing', -1)
 
-        # Helper function to get physical key from intent
         def get_physical_key(intent_idx, facing):
             intent = self.move_intent[int(intent_idx)]
             
-            # Up or NO-MOVE
             if intent in ["-", "U", "D"]:
                 return self.keyMap[intent]
             
-            # Relative logic F/B
             is_forward = 'F' in intent
             is_back = 'B' in intent
             
@@ -446,22 +401,19 @@ class IkemenEnvironment:
             elif is_back:
                 side_key = 'L' if facing == 1 else 'R'
                 
-            # Combination for diagonals (e.g., UF -> U + side_key)
             final_key = ""
-            if 'U' in intent: final_key = 'U' + side_key # Es. UR
-            elif 'D' in intent: final_key = 'D' + side_key # Es. DR
-            else: final_key = side_key # Es. R
+            if 'U' in intent: final_key = 'U' + side_key
+            elif 'D' in intent: final_key = 'D' + side_key
+            else: final_key = side_key
             
             return self.keyMap.get(final_key, "")
 
-        # Get physical keys for both players
         move_str_p1 = get_physical_key(actionP1[0], p1_facing)
         move_str_p2 = get_physical_key(actionP2[0], p2_facing)
         
         btn_str_p1 = self.actionMapHit[int(actionP1[1])]
         btn_str_p2 = self.actionMapHit[int(actionP2[1])]
         
-        # Build and send payload
         payload = {
             "p1_move": move_str_p1,
             "p1_btn": btn_str_p1,
@@ -502,19 +454,16 @@ class IkemenEnvironment:
         except ConnectionError as ex:
             print(f"[{self.instance}] Could not connect: {ex}")
             
-    # Adding a sync protocol...
     def sync_step(self):
         if self.socket is None:
             return None
 
         try:
-            # Ping server with a no-op action
             self.executeAction((0, 0), (0, 0))
             
-            # Quick listen (0.05s timeout)
             self.socket.settimeout(0.05) 
             state, frame = self.recieve()
-            self.socket.settimeout(None) # Restore blocking
+            self.socket.settimeout(None)
             
             if state is not None and state.get('p1_hp', 0) > 0:
                 return state, frame

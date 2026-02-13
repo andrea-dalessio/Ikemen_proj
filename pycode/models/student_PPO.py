@@ -111,9 +111,6 @@ class StudentModel(nn.Module):
 
 
     def distillation_kl(self, student_logits, teacher_logits, temperature):
-        """
-        KL( teacher || student ) with temperature scaling
-        """
         t = temperature
 
         teacher_probs = torch.softmax(teacher_logits / t, dim=-1)
@@ -125,40 +122,23 @@ class StudentModel(nn.Module):
         )
         return kl.mean() * (t ** 2)
         
-    def act(self, frame, mode='exploit'):
-        with torch.no_grad():
-            logits_move, logits_attack = self.network.getMoveAndAttack(frame)
-        dist_move = torch.distributions.Categorical(logits=logits_move)
-        dist_attack = torch.distributions.Categorical(logits=logits_attack)
-        action_move = dist_move.sample()
-        action_attack = dist_attack.sample()
-        action = torch.stack([action_move, action_attack], dim=1)
-
-        return action
-    
     def get_action_and_value(self, x, action=None):
-        """Metodo fondamentale per PPO: restituisce azioni, log_prob e value."""
         logits_move, logits_attack, value = self.network.getMoveAndAttackAndValue(x)
         
-        # 2. Creazione Distribuzioni
         dist_move = torch.distributions.Categorical(logits=logits_move)
         dist_attack = torch.distributions.Categorical(logits=logits_attack)
         
         if action is None:
-            # Inferenza: Campioniamo le azioni
             action_move = dist_move.sample()
             action_attack = dist_attack.sample()
         else:
-            # Training: Usiamo le azioni passate
             action_move = action[:, 0]
             action_attack = action[:, 1]
 
         new_action = torch.stack([action_move, action_attack], dim=1)
             
-        # 3. Calcolo Log Probabilità (Somma dei logaritmi per eventi indipendenti)
         log_prob = dist_move.log_prob(action_move) + dist_attack.log_prob(action_attack)
         
-        # 4. Entropia
         entropy = dist_move.entropy() + dist_attack.entropy()
         
         return new_action, log_prob, entropy, value 
@@ -191,13 +171,11 @@ class StudentModel(nn.Module):
         ret.device = device
         return ret
     
-    # Changing momentarily any additional functions. Recover them in previous commits if needed.
     def compute_gae(self, rewards, values, dones, next_value):
         T, N = rewards.shape
         advantages = torch.zeros_like(rewards)
         lastgaelam = torch.zeros(N)
-
-        # iterate backwards in time
+        
         for t in reversed(range(T)):
             if t == T - 1:
                 nextnonterminal = 1.0 - dones[t]
@@ -214,17 +192,14 @@ class StudentModel(nn.Module):
         return advantages, returns
 
     def ppo_update(self, optimizer, batch_data, last_state, last_frame):
-        """Esegue l'aggiornamento dei pesi della rete."""
-        # Scompattiamo i dati del buffer
         temp = self.dist_temperature
         b_frames, b_state, b_actions, b_logprobs, b_returns, b_advantages, _ = batch_data
         
         current_batch_size = b_state.shape[0]
         
         last_ping_time = time.time()
-        ping_interval = 2.0  # seconds
+        ping_interval = 2.0
         
-        # Ciclo di epoche
         builtins.print = safe_print
         for _ in tqdm(range(self.update_epochs),desc="Consuming the batches"):
             indices = np.random.permutation(current_batch_size)
@@ -233,7 +208,6 @@ class StudentModel(nn.Module):
                 end = start + self.minibatch_size
                 mb_idxs = indices[start:end]
 
-                # --- CODICE PPO STANDARD ---
                 actions_batch = b_actions[mb_idxs].to(self.device)
                 frames_batch = process_frame(b_frames[mb_idxs]).to(self.device) #TODO
                 s_logits_move, s_logits_attack, new_values = self.network.getMoveAndAttackAndValue(frames_batch)
@@ -246,11 +220,9 @@ class StudentModel(nn.Module):
                 )
                 
                 entropy = s_dist_move.entropy() + s_dist_attack.entropy()
-                # _, s_logp, entropy, new_values = self.get_action_and_value(frames_batch, actions_batch)
                 del frames_batch
                 with torch.no_grad():
                     state_batch = b_state[mb_idxs].to(self.device)
-                    # _, t_logp, _, _ = self.teacher.get_action_and_value(state_batch, actions_batch)
                     t_logits_move, t_logits_attack = self.teacher.getLogits(state_batch)
                     del state_batch, actions_batch
                     
@@ -277,7 +249,6 @@ class StudentModel(nn.Module):
                 
                 distill_loss = 0.0
 
-                # Disable distillation if policy is collapsing
                 if self.dist_coef > 0 and b_returns.mean() > -0.2:
                     distill_loss = (
                         self.distillation_kl(s_logits_move, t_logits_move, self.dist_temperature) +
@@ -292,7 +263,6 @@ class StudentModel(nn.Module):
                 loss.backward()
                 nn.utils.clip_grad_norm_(self.parameters(), self.max_grad_norm)
                 optimizer.step()
-                # ---------------------------
                 
                 if time.time() - last_ping_time > ping_interval:
                     last_frame, last_state = self.keep_alive(last_frame, last_state)
@@ -302,10 +272,6 @@ class StudentModel(nn.Module):
         return last_frame, last_state, value_loss.item(), entropy.mean().item()
 
     def keep_alive(self, frame, state):
-        """
-        Needed to keep the connection alive with the Ikemen env while the training runs!
-        """
-        # Generating no-op actions to keep servers alive
         n_envs = self.env_number
         dummy_action = np.zeros((n_envs, 2), dtype=int) 
         
@@ -313,8 +279,7 @@ class StudentModel(nn.Module):
             self.env.executeAction(dummy_action, dummy_action)
             
             raw_next_states, next_frame = self.env.recieve()
-            
-            # Get new state to compute update
+
             self.env.setPreviousState(raw_next_states)
             return next_frame, self.env.normalizeState(raw_next_states)
 
@@ -334,15 +299,11 @@ class StudentModel(nn.Module):
         
         batch_wins = 0
         batch_matches = 0
-
         crash_occurred = False
         
-        # Assicuriamoci che last_obs sia un tensore sulla GPU/CPU corretta
         frame_tensor = torch.tensor(frame, dtype=torch.uint8) 
-        
         state_tensor = torch.tensor(state, dtype=torch.float32)
 
-        # Assicuriamoci che l'env abbia uno stato precedente per il calcolo del reward iniziale
         if not self.env.hasPreviousState:
             self.env.setPreviousState(state.copy())
         
@@ -374,15 +335,12 @@ class StudentModel(nn.Module):
                     print(f"Errore reception: {e}. Interrompo rollout.")
                     crash_occurred = True
                     break
-                # C. Calcola Reward e Done
-                # Nota: rewardCompute usa env.previousState. Dobbiamo assicurarci che sia settato.
-                # Se env.recieve non aggiorna env.previousState, lo facciamo noi alla fine del ciclo.
+
                 rewards, dones = self.env.rewardCompute(raw_next_state)
                 rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device)
                 dones = torch.tensor(dones, dtype=torch.float32, device=self.device)      
                 
-                # --- 4. SALVATAGGIO DATI ---
-                b_frames.append(frame_tensor) #TODO Check after uint shenaningans
+                b_frames.append(frame_tensor)
                 b_states.append(state_tensor)
                 b_actions.append(a1)
                 b_logprobs.append(logp1)
@@ -394,8 +352,7 @@ class StudentModel(nn.Module):
                 next_state = self.env.normalizeState(raw_next_state)
                 state_tensor = torch.tensor(next_state, dtype=torch.float32)
                 frame_tensor = torch.tensor(next_frames, dtype=torch.uint8)
-                # --- 5. GESTIONE FINE EPISODIO (RESET) ---
-                
+
                 for i, done in enumerate(dones):
                     if done:
                         batch_matches += 1
@@ -412,13 +369,10 @@ class StudentModel(nn.Module):
                             break
                         normedState = self.env.normalizeState(raw_reset_state, i)
                         state_tensor[i] = torch.tensor(normedState, dtype=torch.float32)
-                        frame_tensor[i] = torch.tensor(reset_frames, dtype=torch.uint8) #TODO fix
+                        frame_tensor[i] = torch.tensor(reset_frames, dtype=torch.uint8)
                     else:
-                        # Se non è done, aggiorniamo il previousState per il prossimo calcolo reward
                         self.env.setPreviousState(raw_next_state)
 
-                # Aggiorniamo il tensore corrente per il prossimo step
-            # --- 6. BOOTSTRAPPING (Valore finale) ---
             frame_tensor_gpu = process_frame(frame_tensor).to(self.device)
             _, _, _, next_value = self.get_action_and_value(frame_tensor_gpu)
             del frame_tensor_gpu
@@ -429,8 +383,7 @@ class StudentModel(nn.Module):
             print("WARNING: No data collected in rollout. Skipping update.")
             return None, None, None, 0.0, True
 
-        # --- 7. IMPACCHETTAMENTO ---
-        t_frames = torch.stack(b_frames) #TODO Check after uint shenaningans
+        t_frames = torch.stack(b_frames)
         t_states = torch.stack(b_states)
         t_actions = torch.stack(b_actions).cpu()
         t_logprobs = torch.stack(b_logprobs).cpu()
@@ -440,8 +393,6 @@ class StudentModel(nn.Module):
 
         advantages, returns = self.compute_gae(t_rewards, t_values, t_dones, next_value)
         
-        
-        # ----- Flattening ------
         T, N, C, H, W = t_frames.shape
         _, _, S = t_states.shape 
         flat_frames = t_frames.view(T * N, C, H, W)
@@ -462,7 +413,6 @@ class StudentModel(nn.Module):
             flat_values
         )
         
-        # Calculate Win Rate
         if batch_matches > 0:
             win_rate = batch_wins / batch_matches
         else:
@@ -474,14 +424,12 @@ class StudentModel(nn.Module):
     def trainPPO(self):
         print(f"Start Self-Play Training on {self.device}")
         
-        # Opponent (Copia congelata)
         opponent_model = self.make_copy()
         opponent_model.to(self.device)
         opponent_model.eval()
         for param in opponent_model.parameters():
             param.requires_grad = False
         
-        # 2. SETUP OPTIMIZER & OPPONENT
         optimizer = torch.optim.Adam([
             {"params": self.network.backbone.layer4.parameters(), "lr": 1e-4},
             {"params": self.network.decisor.parameters(), "lr": 1e-3}
@@ -492,7 +440,7 @@ class StudentModel(nn.Module):
             
             raw_init, frame = self.env.wait_for_match_start()
             state = self.env.normalizeState(raw_init)
-            self.env.setPreviousState(raw_init) # Inizializziamo per il reward
+            self.env.setPreviousState(raw_init)
             
             print("Environment connected successfully.")
         except Exception as e:
@@ -500,16 +448,13 @@ class StudentModel(nn.Module):
             self.env.close_game()
             return
 
-        # Variabili Loop
         total_updates = self.episodes
         global_step = 0
         win_rate_history = deque(maxlen=5)
         
         print(f"[Master]> Start episode loop from {self.checkpoint}")
         for update in range(self.checkpoint, total_updates):
-            #os.system('clear')
             print(f"[Master]> Update {update + 1}: start episode")
-            # A. RACCOLTA DATI
             
             try:
                 builtins.print = safe_print
@@ -530,13 +475,10 @@ class StudentModel(nn.Module):
                     break
                 continue
             
-            
-            # Aggiorniamo stato e contatori
             last_frame = next_frames
             last_state = next_states
             global_step += self.rollout_steps
             
-            # Tracking
             if win_rate is not None:
                 win_rate_history.append(win_rate)
                 
@@ -545,36 +487,32 @@ class StudentModel(nn.Module):
             else:
                 avg_win_rate = 0.0
             
-            # Entropy decay
             self.entropy_coef = max(0.001, 0.02*(1-(update/total_updates)))
             
-            # B. UPDATE PPO (LEARNER)
             print(f"[Master]> Coumputing PPO update")
             frame, state, valueloss, entropy = self.ppo_update(optimizer, batch_data, last_state, last_frame)
             
-            # C. LOGGING
             if batch_data is not None:
                 avg_return = batch_data[4].mean().item()
             else:
                 print("[Master]> Batch empty: skip")
                 continue
+            
             print(f"[Master]> Update {update+1}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
             del batch_data, next_frames, next_states
-            # D. OPPONENT UPGRADE LOGIC
-            # Se il learner vince > 60% delle volte, diventa il nuovo maestro
+            
             if avg_win_rate > 0.60 and len(win_rate_history) == 7:
                 print(f"[Master]> Update {update+1}: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()
             
-            # E. SAVE CHECKPOINT
             if (update+1) % 10 == 0:
                 self.save(update+1)
                 print(f"[Master]> Update {update+1}: Checkpoint saved")
                 
             if self.configs['studentModel']['colab']:
                 torch.save(self.network.state_dict(), '/content/drive/MyDrive/RL_Backup/backup.pt')
-            # F. LOG TO CSV
+            
             log_data = {
                 'update': update+1,
                 'steps': global_step,
@@ -583,6 +521,7 @@ class StudentModel(nn.Module):
                 'value_loss': valueloss,
                 'entropy': entropy
             }
+            
             df = DataFrame([log_data])
             df.to_csv(self.loggingPath, mode='a', header=not Path(self.loggingPath).is_file(), index=False)
 
@@ -612,28 +551,24 @@ class StudentModel(nn.Module):
         if not self.env.hasPreviousState:
             self.env.setPreviousState(state.copy())
         
-        # print(frame_tensor.shape)
-        
         done = False
-        
         total_reward = 0
+        
         print("[Master]> Game start")
         while not done:
             with torch.no_grad():
                 frame_tensor_gpu = process_frame(frame_tensor).to(self.device)
-                a1 = self.act(frame_tensor_gpu)
+                a1, _, _, _ = self.get_action_and_value(frame_tensor_gpu)
                 
                 opponent_screen = flip_frames(frame_tensor_gpu)
-                a2 = opponent_model.act(opponent_screen)
-            
-            del frame_tensor_gpu, opponent_screen
+                a2, _, _, _ = opponent_model.get_action_and_value(opponent_screen)
+                del frame_tensor_gpu, opponent_screen
             
             act_p1 = a1.cpu().numpy()
             act_p2 = a2.cpu().numpy()
 
             try:
                 self.env.executeAction(act_p1, act_p2)
-                
             except Exception as e:
                 print(f"Errore action execution: {e}")
                 break
@@ -643,10 +578,13 @@ class StudentModel(nn.Module):
             except Exception as e:
                 print(f"Errore reception: {e}. Interrompo rollout.")
                 break
+            
             frame_tensor = torch.tensor(next_frames, dtype=torch.uint8)
             rewards, dones = self.env.rewardCompute(state)
+            
             total_reward += rewards[0]
             done = dones[0]
+        
         self.env.close_game()
         print(f"[Master]> Reward: {total_reward}")
         

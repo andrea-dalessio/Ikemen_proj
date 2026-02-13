@@ -62,8 +62,8 @@ class SuperEnvironment:
     def wait_for_match_start(self, timeout=60):
         print("Parallel handshaking with environments...")
         start_time = time.time()
-        results = [None for _ in range(self.count)]  # Results from games
-        synced_mask = [False for _ in range(self.count)] # Is the round over?
+        results = [None for _ in range(self.count)]  
+        synced_mask = [False for _ in range(self.count)]
         
         while not all(synced_mask):
             if time.time() - start_time > timeout:
@@ -72,8 +72,7 @@ class SuperEnvironment:
             for i, env in enumerate(self.envs):
                 if synced_mask[i]:
                     continue
-                
-                # Single sync attempt
+
                 res = env.sync_step()
                 
                 if res is not None:
@@ -81,11 +80,9 @@ class SuperEnvironment:
                     synced_mask[i] = True
                     print(f"[{i}] Synced!")
             
-            # Small sleep to avoid maxing out the CPU in the while loop
             if not all(synced_mask):
                 time.sleep(0.1)
 
-        # Unpacking results
         states = [r[0] for r in results]
         frames = [r[1] for r in results]
         
@@ -142,8 +139,8 @@ class SuperEnvironment:
         
     def hard_restart(self):
         self.close_game()
-        time.sleep(2) # Pulizia risorse OS
-        self.start() # Rilancia e riconnette
+        time.sleep(2)
+        self.start()
         return self.wait_for_match_start()
     
     def normalizeState(self, state, index:int|None=None):
