@@ -580,6 +580,8 @@ class StudentModel(nn.Module):
                 print(f"Errore reception: {e}. Interrompo rollout.")
                 break
             
+            self.env.setPreviousState(state.copy())
+            
             frame_tensor = torch.tensor(next_frames, dtype=torch.uint8)
             rewards, dones = self.env.rewardCompute(state)
             
