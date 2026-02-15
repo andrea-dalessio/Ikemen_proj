@@ -502,7 +502,7 @@ class StudentModel(nn.Module):
             print(f"[Master]> Update {update+1}/{total_updates} | Steps: {global_step} | Avg Return: {avg_return:.3f} | Win Rate: {avg_win_rate:.2%}")
             del batch_data, next_frames, next_states
             
-            if avg_win_rate > 0.60 and len(win_rate_history) == 7:
+            if avg_win_rate > 0.60 and len(win_rate_history) == 5:
                 print(f"[Master]> Update {update+1}: Opponent updated to current Learner policy.")
                 opponent_model.load_state_dict(self.state_dict())
                 win_rate_history.clear()
