@@ -1,16 +1,19 @@
 # Learning I.K.E.M.En GO with Self-play PPO with distillation  
 
-## Side branch 1  
+RL algorithm for learning to play IKEMEN GO with a vision model, helped by a Teacher MLP model.  
+To run the script, launch  
+```python
+python main.py <--options>
+```  
+The options are  
+| Name | Description |
+| :--- | :--- |
+| --teacherTrain | Starts training mode for teacher.<br>If a checkpoint is present<br>resumes from there. |
+| --studentTrain | Trains the student, same as teacher. |
+| --eval | Runs one instance of the student model.<br>Uses a previous opponent. |
+| --headless | Suppresses game window |
+| -n <number> | Choose how many concurren envs<br>should run. | 
 
-Affrontando il problema del *termination simplification* per eseguire un workaround sul problema di gestione  
-del timeout dei rounds. Training eseguito su round infiniti ma reward shaping eseguito per rendere piu'  
-aggressivi i players.  
-
-Struttura attuale modello:  
-- **Self-play PPO deep residual MLP teacher** su vectorized features da IKEMEN internal memory.  
-- **Self-play PPO Vision CNN student con distillation** su stack di frames. Implementando il metodo realizzato  
-in main da Davide.  
- 
 
 ## State struct
 
@@ -50,7 +53,3 @@ type RLGameState struct {
 }
 ~~~
 
-## TODO
-
-- Remove the ticks/max_tiks message in the env
-- Fix print message update missmatch
