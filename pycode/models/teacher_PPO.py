@@ -53,7 +53,7 @@ class TeacherModel(nn.Module):
         self.entropy_coef = configs['general']['entropy_coef']
         self.value_loss_coef = configs['general']['value_loss_coef']
         self.max_grad_norm = configs['general']['max_grad_norm']
-        self.lr = configs['teacherModel']['lr']
+        self.lr = float(configs['teacherModel']['lr'])
         self.update_epochs = configs['teacherModel']['update_epochs']
         self.batch_size = configs['teacherModel']['batch_size']
         self.minibatch_size = configs['teacherModel']['minibatch_size']
